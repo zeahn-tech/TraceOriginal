@@ -1,0 +1,128 @@
+rules_version = '2';
+
+// TraceNet Firebase Storage Security Rules
+//
+// See FIREBASE_SECURITY_IMPLEMENTATION.md for full rationale. Two things
+// worth calling out up front:
+//
+// 1. Report evidence paths embed the uploading user's uid directly
+//    (reports/{reportId}/{uid}/{kind}/{file}) rather than relying solely on
+//    a Firestore cross-reference to the report document. This is
+//    deliberate: services.ts's durable-transaction pipeline uploads media
+//    to Storage BEFORE the corresponding Firestore report document exists
+//    (by design). A rule that only checked "does the Firestore report
+//    belong to me" would reject every legitimate upload, because at upload
+//    time that document doesn't exist yet. Embedding uid in the path lets
+//    Storage verify ownership from the request alone, with no ordering
+//    dependency.
+//
+// 2. Reads of already-uploaded evidence DO cross-reference Firestore
+//    (firestore.get / firestore.exists), because by the time anyone wants
+//    to view evidence, the report document is guaranteed to exist.
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+    function callerDoc() {
+      return firestore.get(/databases/(default)/documents/users/$(uid())).data;
+    }
+    function isAdmin() { return isSignedIn() && callerDoc().role == 'ADMIN'; }
+    function isApprovedOfficer() {
+      return isSignedIn() && callerDoc().role == 'LAW_ENFORCER' && callerDoc().isApproved == true;
+    }
+    function isPrivileged() { return isAdmin() || isApprovedOfficer(); }
+
+    function isImage() { return request.resource.contentType.matches('image/(jpeg|png|webp|gif)'); }
+    function isVideo() { return request.resource.contentType.matches('video/(mp4|webm|quicktime)'); }
+    function isAudio() { return request.resource.contentType.matches('audio/(mpeg|mp4|wav|webm|ogg)'); }
+    function isAllowedMediaType() { return isImage() || isVideo() || isAudio(); }
+    // Mirrors services.ts's MAX_IMAGE_BYTES / MAX_MEDIA_BYTES exactly —
+    // large-file protection enforced server-side, not just client-side.
+    function withinSizeLimit() {
+      return isImage()
+        ? request.resource.size <= 15 * 1024 * 1024
+        : request.resource.size <= 50 * 1024 * 1024;
+    }
+
+    // -----------------------------------------------------------------
+    // Report evidence: reports/{reportId}/{uid}/{kind}/{fileName}
+    // -----------------------------------------------------------------
+    match /reports/{reportId}/{uploaderId}/{kind}/{fileName} {
+      function reportIsPublicVerified(id) {
+        let report = firestore.get(/databases/(default)/documents/reports/$(id)).data;
+        return report.status == 'VERIFIED' && report.get('isDeleted', false) != true;
+      }
+
+      allow read: if isPrivileged()
+        || (isSignedIn() && uid() == uploaderId)
+        || (firestore.exists(/databases/(default)/documents/reports/$(reportId)) && reportIsPublicVerified(reportId));
+
+      // Ownership is proven by the path itself (see file header) — the
+      // uploader's own uid must match the path segment they're writing to.
+      // Officers/admins may also attach evidence directly (e.g. evidence
+      // collected in the field).
+      allow write: if ((isSignedIn() && uid() == uploaderId) || isPrivileged())
+        && isAllowedMediaType() && withinSizeLimit()
+        && kind in ['image','video','audio'];
+
+      allow delete: if (isSignedIn() && uid() == uploaderId) || isPrivileged();
+    }
+
+    // -----------------------------------------------------------------
+    // Wanted-notice photos: criminals/{criminalId}/{kind}/{fileName}
+    // -----------------------------------------------------------------
+    match /criminals/{criminalId}/{kind}/{fileName} {
+      function wantedIsPublicVerified(id) {
+        let notice = firestore.get(/databases/(default)/documents/wanted_criminals/$(id)).data;
+        return notice.isVerified == true && notice.get('isDeleted', false) != true;
+      }
+
+      allow read: if isPrivileged()
+        || (firestore.exists(/databases/(default)/documents/wanted_criminals/$(criminalId)) && wantedIsPublicVerified(criminalId));
+
+      // Only staff create wanted notices in this app (WantedForm is behind
+      // a LAW_ENFORCER-only route) — no owner/self concept applies here.
+      allow write: if isPrivileged() && isAllowedMediaType() && withinSizeLimit() && kind in ['image','video','audio'];
+      allow delete: if isPrivileged();
+    }
+
+    // -----------------------------------------------------------------
+    // Identity documents: id_cards/{uid}/{fileName}
+    //
+    // The single most sensitive path in this app — a government ID
+    // uploaded during officer signup for admin verification. "Prevent
+    // users from accessing another user's private identity documents
+    // unless explicitly authorized": the only "explicit authorization" in
+    // this app is ADMIN, for the legitimate purpose of reviewing an
+    // officer's application. Not even other officers can read another
+    // officer's id card.
+    // -----------------------------------------------------------------
+    match /id_cards/{ownerId}/{fileName} {
+      allow read: if isSignedIn() && (uid() == ownerId || isAdmin());
+      allow write: if isSignedIn() && uid() == ownerId && isImage() && withinSizeLimit();
+      allow delete: if isSignedIn() && (uid() == ownerId || isAdmin());
+    }
+
+    // -----------------------------------------------------------------
+    // Profile photos: profile_images/{uid}/{fileName}
+    //
+    // Not currently written by any code path in this app (Profile.tsx has
+    // no upload UI for it yet), but the `profileImageUrl` field exists in
+    // the domain model. Rule provided defensively so this path is neither
+    // silently wide open nor silently 100% closed the moment it IS wired
+    // up — same self+admin pattern as id_cards, least-privilege default.
+    // -----------------------------------------------------------------
+    match /profile_images/{ownerId}/{fileName} {
+      allow read: if isSignedIn() && (uid() == ownerId || isAdmin());
+      allow write: if isSignedIn() && uid() == ownerId && isImage() && withinSizeLimit();
+      allow delete: if isSignedIn() && (uid() == ownerId || isAdmin());
+    }
+
+    // Default deny — anything not explicitly matched above is inaccessible.
+    match /{allOtherPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

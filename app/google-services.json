@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "563728002879",
+    "firebase_url": "https://tracenet-23a64-default-rtdb.europe-west1.firebasedatabase.app",
+    "project_id": "tracenet-23a64",
+    "storage_bucket": "tracenet-23a64.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:563728002879:android:4e874a7b6a55aaa9e5ed8a",
+        "android_client_info": {
+          "package_name": "com.aistudio.tracenet.kqjwpz"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "563728002879-bfrckjap3dbo67btgtosebdg96tu7t5g.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.aistudio.tracenet.kqjwpz",
+            "certificate_hash": "cee488473231162b437204d5ce49129b9de3c448"
+          }
+        },
+        {
+          "client_id": "563728002879-5520b613d3b9k9c78j5uh4i9dfdv8gah.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD8a8t0NBidRn-TNy0sHnk_qs3MosxXeCc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "563728002879-5520b613d3b9k9c78j5uh4i9dfdv8gah.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

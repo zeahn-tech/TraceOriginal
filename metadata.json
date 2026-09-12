@@ -1,0 +1,6 @@
+{
+  "name": "TraceNet",
+  "description": "TraceNet is a public safety platform where law enforcement and citizens collaborate to find missing persons, locate wanted individuals, and improve community safety with real-time alerts and encrypted communications.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

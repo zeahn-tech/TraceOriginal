@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <script>
+      // GitHub Pages has no server-side rewrite capability, so any deep
+      // link (e.g. a bookmark or shared URL to /tracenet-pwa/reports/new,
+      // or a hard refresh on a client-side route) hits GitHub's static
+      // file server directly and 404s. GitHub Pages serves this exact file
+      // for any 404 within the repo's scope, so this stores the requested
+      // path and redirects to the app's base path; main.tsx reads it back
+      // and restores the correct URL client-side via history.replaceState
+      // once the app shell (and React Router) has loaded.
+      //
+      // NOTE: this file must be deployed at the site's actual root for
+      // GitHub Pages to use it as the 404 handler — see
+      // PWA_PRODUCTION_VALIDATION.md for why it previously never reached
+      // the deployed site at all despite existing in the repository.
+      (function () {
+        try {
+          var redirect = location.pathname + location.search + location.hash;
+          sessionStorage.setItem('tracenet-pages-redirect', redirect);
+        } catch (e) {
+          // sessionStorage can throw in some restricted/private-browsing
+          // contexts; if so, we still redirect to the app shell below —
+          // the person just lands on the home route instead of their
+          // original deep link, which is a safe, non-broken fallback
+          // rather than GitHub's raw 404 page.
+        }
+        // Assumes a single-segment base path (e.g. /tracenet-pwa/), which
+        // matches this project's GitHub Pages project-site deployment
+        // (VITE_BASE_PATH is always /<repo-name>/ — see
+        // .github/workflows/deploy-pages.yml). A custom domain or a
+        // multi-segment base path would need this adjusted accordingly.
+        location.replace(location.origin + location.pathname.split('/').slice(0, 2).join('/') + '/');
+      }());
+    </script>
+  </head>
+  <body></body>
+</html>

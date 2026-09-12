@@ -1,0 +1,316 @@
+rules_version = '2';
+
+// TraceNet Firestore Security Rules
+//
+// This is the actual, server-enforced authorization boundary. React route
+// guards (Protected in src/App.tsx) control what the UI *shows*, never what
+// the backend *allows* — every rule below must hold even if the request
+// comes directly from the Firebase SDK console, curl against the REST API,
+// or a modified client, bypassing the UI entirely.
+//
+// See FIREBASE_SECURITY_IMPLEMENTATION.md for the full design rationale,
+// the mapping from each rule to the app's actual read/write patterns
+// (src/services.ts / src/App.tsx), and the emulator tests that exercise
+// every branch below.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // -----------------------------------------------------------------
+    // Shared helpers
+    // -----------------------------------------------------------------
+    function isSignedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+
+    // Looking up the caller's own user document is how every role check
+    // below works. This document is written once at signup (see the
+    // /users/{userId} create rule) and is the single source of truth for
+    // role/approval state — never trusted from the client's own claims.
+    function callerDoc() {
+      return get(/databases/$(database)/documents/users/$(uid())).data;
+    }
+    function callerRole() { return isSignedIn() ? callerDoc().role : null; }
+    function isAdmin() { return isSignedIn() && callerRole() == 'ADMIN'; }
+    // An officer must be BOTH role == LAW_ENFORCER AND approved — an
+    // unapproved officer account has no more access than a citizen. This is
+    // the server-side twin of the isApproved gate the UI already shows,
+    // except this one cannot be bypassed by calling the SDK directly.
+    function isApprovedOfficer() {
+      return isSignedIn() && callerRole() == 'LAW_ENFORCER' && callerDoc().isApproved == true;
+    }
+    function isPrivileged() { return isAdmin() || isApprovedOfficer(); }
+
+    // Only ever store real Firebase Storage download URLs in media fields —
+    // the same non-negotiable rule enforced client-side in
+    // services.ts#assertRemoteMedia, now also enforced server-side so it
+    // cannot be bypassed by talking to Firestore directly.
+    function isHttpsStorageUrl(url) {
+      return url is string && url.matches('^https://firebasestorage\\.googleapis\\.com/v0/b/[^/]+/o/.+');
+    }
+    function allHttpsStorageUrls(urls) {
+      return urls is list && urls.size() <= 20 && urls.filter(u => isHttpsStorageUrl(u)).size() == urls.size();
+    }
+
+    function affectedKeys() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    // -----------------------------------------------------------------
+    // Per-user daily submission quotas (report/tip/alert spam & cost-abuse
+    // protection) — see ABUSE_PROTECTION_REPORT.md. These numbers MUST
+    // match services.ts's DAILY_LIMITS constant; they're duplicated here
+    // because Firestore rules cannot import a shared constant from
+    // application code.
+    // -----------------------------------------------------------------
+    function quotaOk(kind, limit) {
+      // getAfter() reads the state of the /rate_limits/{uid}_{kind} counter
+      // AFTER this entire request commits — proving the counter was
+      // genuinely incremented as part of THIS SAME atomic write (see
+      // services.ts#writeWithQuota), not just coincidentally already under
+      // the limit from some earlier, unrelated state.
+      let counterPath = /databases/$(database)/documents/rate_limits/$(uid() + '_' + kind);
+      let before = exists(counterPath) ? get(counterPath).data.count : 0;
+      let after = getAfter(counterPath).data.count;
+      return after == before + 1 && after <= limit;
+    }
+
+    // -----------------------------------------------------------------
+    // /rate_limits/{uid}_{kind} — rolling 24h submission counters. The
+    // counter's OWN rules independently guarantee any successful write to
+    // it is a genuine +1 or a legitimate window reset — this is defense in
+    // depth alongside quotaOk() above, not the only thing enforcing it.
+    // -----------------------------------------------------------------
+    match /rate_limits/{counterId} {
+      function ownerUid() { return counterId.split('_')[0]; }
+      function windowExpired() {
+        return resource == null || request.time > resource.data.windowStart + duration.value(24, 'h');
+      }
+
+      allow read: if isSignedIn() && ownerUid() == uid();
+      allow create: if isSignedIn() && ownerUid() == uid()
+        && request.resource.data.count == 1
+        && request.resource.data.windowStart == request.time;
+      allow update: if isSignedIn() && ownerUid() == uid()
+        && (
+          (!windowExpired() && request.resource.data.count == resource.data.count + 1 && request.resource.data.windowStart == resource.data.windowStart)
+          || (windowExpired() && request.resource.data.count == 1 && request.resource.data.windowStart == request.time)
+        );
+      allow delete: if false;
+    }
+
+    // -----------------------------------------------------------------
+    // /users/{userId} — profiles, roles, approval state, identity linkage
+    // -----------------------------------------------------------------
+    match /users/{userId} {
+      // Anyone signed in may read their own profile; only ADMIN may read
+      // (or list) anyone else's. This is what closes the forensic-audit
+      // finding where the client fetched the ENTIRE users collection
+      // (names, addresses, badge numbers, id-card URLs) regardless of role.
+      allow get: if isSignedIn() && (uid() == userId || isAdmin());
+      allow list: if isAdmin();
+
+      // Account creation happens exactly once, by the account owner, at
+      // signup. A brand-new account can never self-assign ADMIN, and an
+      // officer account always starts unapproved — approval is granted
+      // later, exclusively via the ADMIN branch of `update` below.
+      allow create: if isSignedIn() && uid() == userId
+        && request.resource.data.id == userId
+        && request.resource.data.role in ['CITIZEN', 'LAW_ENFORCER']
+        && (request.resource.data.role == 'CITIZEN'
+              ? request.resource.data.isApproved == true
+              : request.resource.data.isApproved == false)
+        && (!('idCardUrl' in request.resource.data) || isHttpsStorageUrl(request.resource.data.idCardUrl))
+        && (!('profileImageUrl' in request.resource.data) || isHttpsStorageUrl(request.resource.data.profileImageUrl));
+
+      // Self-service profile edits may only ever touch a fixed set of
+      // descriptive fields — never role, approval, status, or the document
+      // id itself. Granting an officer's own approval, or self-promoting to
+      // ADMIN, is impossible through this branch no matter what the client
+      // sends. ADMIN may change ordinary profile/account-maintenance fields
+      // directly, but role/isApproved/status are now EXCLUSIVELY managed by
+      // the approveOfficer/setUserRole/setUserStatus Cloud Functions (see
+      // FIREBASE_FUNCTIONS_ARCHITECTURE.md) — not even an admin's own
+      // direct Firestore write can change them anymore. This is what makes
+      // moving these operations server-side actually mean something: an
+      // admin can no longer bypass the audited, validated Function path by
+      // editing Firestore directly from devtools.
+      allow update: if (isSignedIn() && uid() == userId
+          && affectedKeys().hasOnly(['name', 'contact', 'address', 'profileImageUrl', 'idCardUrl'])
+          && (!('profileImageUrl' in request.resource.data) || isHttpsStorageUrl(request.resource.data.profileImageUrl))
+          && (!('idCardUrl' in request.resource.data) || isHttpsStorageUrl(request.resource.data.idCardUrl)))
+        || (isAdmin() && !affectedKeys().hasAny(['id', 'role', 'isApproved', 'status']));
+
+      allow delete: if false;
+    }
+
+    // -----------------------------------------------------------------
+    // /reports/{reportId} — incident reports (owner-visible, staff-visible,
+    // and a public-safe subset once verified)
+    // -----------------------------------------------------------------
+    match /reports/{reportId} {
+      function isOwner() { return isSignedIn() && resource.data.reporterId == uid(); }
+      function isPublicVerified() { return resource.data.status == 'VERIFIED' && resource.data.get('isDeleted', false) != true; }
+
+      allow read: if isPrivileged() || isOwner() || isPublicVerified();
+
+      // A citizen may only ever create a report as themselves, starting in
+      // PENDING (never self-verified, never pre-escalated, never
+      // pre-deleted), and only with real Storage URLs already attached —
+      // the pipeline in services.ts guarantees this ordering client-side;
+      // this is the server-side backstop.
+      allow create: if isSignedIn()
+        && request.resource.data.id == reportId
+        && request.resource.data.reporterId == uid()
+        && request.resource.data.status == 'PENDING'
+        && request.resource.data.get('isEscalated', false) != true
+        && request.resource.data.get('isDeleted', false) != true
+        && request.resource.data.keys().hasAll(['id','title','description','type','latitude','longitude','timestamp','updatedAt','reporterId','isAnonymous','status','imageUrls','videoUrls','audioUrls'])
+        && request.resource.data.title.size() <= 200
+        && request.resource.data.description.size() <= 5000
+        && allHttpsStorageUrls(request.resource.data.imageUrls)
+        && allHttpsStorageUrls(request.resource.data.videoUrls)
+        && allHttpsStorageUrls(request.resource.data.audioUrls)
+        // Matches ReportForm's own 6-file cap — a real ceiling, not just
+        // the client's UI convenience limit.
+        && (request.resource.data.imageUrls.size() + request.resource.data.videoUrls.size() + request.resource.data.audioUrls.size()) <= 6
+        // Report submission limit — see ABUSE_PROTECTION_REPORT.md.
+        && quotaOk('reports', 10);
+
+      // Staff (officer/admin) may add internal investigation notes, assign
+      // an investigator, escalate, or soft-delete directly — but `status`
+      // is now EXCLUSIVELY managed by the transitionReportStatus Cloud
+      // Function (see FIREBASE_FUNCTIONS_ARCHITECTURE.md), since it's the
+      // one field that changes public visibility (VERIFIED makes a report
+      // and its evidence publicly readable). Not even a direct admin write
+      // can change status anymore — this is what "protect report status
+      // transitions" means enforced, not just documented.
+      //
+      // The report's own author may correct their title/description or
+      // withdraw the report (soft-delete only, never un-delete it, and
+      // never touch anything staff-controlled) — matching exactly what the
+      // existing Edit/Delete buttons on ReportCard do and nothing more.
+      allow update: if (isPrivileged()
+          && affectedKeys().hasOnly(['internalNotes','assignedInvestigator','isEscalated','isDeleted','updatedAt']))
+        || (isOwner()
+          && affectedKeys().hasOnly(['title','description','updatedAt','isDeleted'])
+          && (!('isDeleted' in request.resource.data) || request.resource.data.isDeleted == true));
+
+      allow delete: if false; // soft-delete (isDeleted) only — no hard delete from any client
+    }
+
+    // -----------------------------------------------------------------
+    // /wanted_criminals/{id} — wanted-person notices (staff manage; public
+    // sees only verified notices)
+    // -----------------------------------------------------------------
+    match /wanted_criminals/{id} {
+      function isPublicVerified() { return resource.data.isVerified == true && resource.data.get('isDeleted', false) != true; }
+
+      allow read: if isPrivileged() || isPublicVerified();
+
+      allow create: if isPrivileged()
+        && request.resource.data.id == id
+        && request.resource.data.isVerified == false
+        && request.resource.data.get('isDeleted', false) != true
+        && request.resource.data.keys().hasAll(['id','name','description','timestamp','updatedAt','isArrested','imageUrls','category','status','isVerified'])
+        && request.resource.data.name.size() <= 200
+        && request.resource.data.description.size() <= 5000
+        && allHttpsStorageUrls(request.resource.data.imageUrls)
+        && request.resource.data.imageUrls.size() <= 4;
+
+      // Soft-delete only, directly. Verification/dismissal (isVerified,
+      // status) is now EXCLUSIVELY managed by the verifyWantedNotice Cloud
+      // Function (see FIREBASE_FUNCTIONS_ARCHITECTURE.md) — this is the
+      // field that makes a notice publicly visible, so not even a direct
+      // staff write can change it anymore.
+      allow update: if isPrivileged()
+        && affectedKeys().hasOnly(['isDeleted','updatedAt']);
+
+      allow delete: if false;
+    }
+
+    // -----------------------------------------------------------------
+    // /tips/{id} — anonymous or attributed citizen tips linked to a report
+    // -----------------------------------------------------------------
+    match /tips/{id} {
+      // A citizen may read their own attributed tip back; a truly anonymous
+      // tip (no submitterId) is not individually re-readable by anyone
+      // except staff — it is anonymous even from its own submitter's later
+      // sessions, matching what "submit anonymously" is supposed to mean.
+      allow read: if isPrivileged() || (isSignedIn() && resource.data.get('submitterId', null) == uid());
+
+      allow create: if isSignedIn()
+        && request.resource.data.id == id
+        && request.resource.data.isReviewed == false
+        && request.resource.data.get('isDeleted', false) != true
+        && request.resource.data.content.size() <= 5000
+        && (request.resource.data.isAnonymous == true
+              ? request.resource.data.get('submitterId', null) == null
+              : request.resource.data.get('submitterId', null) == uid())
+        && exists(/databases/$(database)/documents/reports/$(request.resource.data.reportId))
+        // Tip submission limit — see ABUSE_PROTECTION_REPORT.md.
+        && quotaOk('tips', 15);
+
+      // Only staff may mark a tip reviewed or remove it — the citizen who
+      // sent it has no further write access to it at all (consistent with
+      // "you can't edit a tip after sending it" in the current UI).
+      allow update: if isPrivileged() && affectedKeys().hasOnly(['isReviewed','isDeleted']);
+
+      allow delete: if false;
+    }
+
+    // -----------------------------------------------------------------
+    // /alerts/{id} — public safety broadcasts and citizen SOS signals
+    // -----------------------------------------------------------------
+    match /alerts/{id} {
+      // Public safety information by design — readable by everyone,
+      // including signed-out visitors on the Public Portal.
+      allow read: if true;
+
+      // Both the Admin broadcast dialog AND a citizen's SOS button create
+      // documents in this same collection through the same code path
+      // (see src/App.tsx SOS / AlertDialog) — the schema has no field
+      // distinguishing the two, so this rule cannot tell them apart either.
+      // Documented explicitly as a known, schema-level limitation in
+      // FIREBASE_SECURITY_IMPLEMENTATION.md rather than silently assumed.
+      allow create: if isSignedIn()
+        && request.resource.data.id == id
+        && request.resource.data.keys().hasAll(['id','title','content','urgency','locationName','latitude','longitude','timestamp'])
+        && request.resource.data.title.size() <= 200
+        && request.resource.data.content.size() <= 2000
+        // SOS / alert-creation limit — see ABUSE_PROTECTION_REPORT.md.
+        // (Admin's official broadcasts go through the publishAlert Cloud
+        // Function via the Admin SDK, which bypasses these rules entirely
+        // by design — that path is rate-limited separately, at the
+        // Function layer, not here.)
+        && quotaOk('alerts', 5);
+
+      allow update: if isPrivileged()
+        && affectedKeys().hasOnly(['title','content','urgency','locationName','county','latitude','longitude']);
+
+      allow delete: if false;
+    }
+
+    // -----------------------------------------------------------------
+    // /audit_logs/{id} — structured audit trail written exclusively by
+    // Cloud Functions via the Admin SDK (which bypasses these rules
+    // entirely, as Admin SDK always does). This rule exists to make the
+    // guarantee explicit and enforced rather than merely assumed: no
+    // client, including an admin's own client, can ever create, edit, or
+    // delete an audit log entry — only read it.
+    // -----------------------------------------------------------------
+    match /audit_logs/{id} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // -----------------------------------------------------------------
+    // /function_calls/{requestId} — internal idempotency bookkeeping for
+    // Cloud Functions (see firebase/functions/src/lib/idempotency.ts).
+    // Entirely opaque to every client; nothing outside a Function ever
+    // needs to read or write it.
+    // -----------------------------------------------------------------
+    match /function_calls/{requestId} {
+      allow read, write: if false;
+    }
+  }
+}

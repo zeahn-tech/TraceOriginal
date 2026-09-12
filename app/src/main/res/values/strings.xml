@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">TraceNet</string>
+    <string name="app_description">TraceNet is a public safety platform where law enforcement and citizens collaborate to find missing persons, locate wanted individuals, and improve community safety with real-time alerts and encrypted communications.</string>
+    <string name="default_web_client_id">563728002879-5520b613d3b9k9c78j5uh4i9dfdv8gah.apps.googleusercontent.com</string>
+</resources>
