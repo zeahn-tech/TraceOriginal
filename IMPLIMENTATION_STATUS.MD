@@ -1,6 +1,6 @@
 # TraceNet — Implementation Status
 
-**Last updated:** after Phase 11 (Automated QA Suite), complete.
+**Last updated:** after Phase 12 (Splash-Screen Deadlock Fix), complete.
 **Purpose:** single source of truth for what's been done, what's verified vs. not, and exactly what to pick up next. Read this before starting any new work on this project.
 
 ---
@@ -145,6 +145,28 @@ Full QA pass across every area requested: Authentication, Routing, Role authoriz
 **Action needed from the user:** run `npm run test:e2e` from a machine with normal internet access (after `npx playwright install chromium` and with the Firebase Emulator Suite reachable); report back the pass/fail output. This is the single remaining unexecuted piece of the QA suite requested.
 
 ---
+
+### 12. Splash-Screen Deadlock Fix — ✅ Complete, executed & passing
+**Deliverable:** fix in `src/services.ts`; regression tests `src/services.observeAuth.test.ts`, `src/features/auth/splash.test.tsx`
+
+**The reported symptom:** the deployed app never got past the splash screen — it sat on it forever, with the rest of the app (Welcome, Public Portal, Sign In, About, and every other route) completely unreachable.
+
+**Root cause, found by tracing the actual code path, not guessed:** `observeAuth` (`src/services.ts`) returned a permanent no-op — `auth ? onAuthStateChanged(auth,callback) : (()=>{})` — whenever Firebase wasn't configured or failed to initialize (`auth` undefined). `useAppData.ts` only clears its `loading` state *inside* that callback, and `Splash.tsx` only navigates away from the splash screen once `loading` is `false`. So an unconfigured/failed Firebase setup meant the callback simply never fired, `loading` never cleared, and the entire app deadlocked on the splash screen with no error shown at all — this is exactly the scenario the project's own `GITHUB_PAGES_PRODUCTION_GUIDE.md` already warned about ("the site will deploy successfully but Authentication/Firestore/Storage will not initialize" if the `VITE_FIREBASE_*` repository variables were never configured), except the actual failure mode was worse than "auth doesn't work" — it was "nothing works, ever, including public unauthenticated pages that don't need Firebase at all."
+
+**The fix:** `observeAuth` now always resolves its callback — with the real Firebase user when configured, or with `null` (asynchronously, matching Firebase's own always-async contract) when not — instead of hanging forever. This treats "not configured" the same as "signed out": the splash screen's existing 2.5s timer then does what it always does for a signed-out visitor and navigates to `/welcome`, and every public route (Welcome, Public Portal, Sign In, Sign Up, About, Map, Contacts, Analytics) becomes reachable regardless of Firebase's configuration state. Only the actions that genuinely require Firebase (`session.signIn`, `session.signUp`, etc. — already wired to reject with a clear "Firebase configuration is required..." message) fail; navigation itself no longer does.
+
+**Verified:**
+- `src/services.observeAuth.test.ts` (4/4 passing): proves `observeAuth` resolves `callback(null)` instead of hanging when Firebase is unconfigured, that the returned unsubscribe is safe to call, and that the configured-Firebase path is completely unaffected (still delegates straight to the real `onAuthStateChanged`).
+- `src/features/auth/splash.test.tsx` (1/1 passing) — an end-to-end regression test that reproduces the exact reported scenario inside jsdom: real `useAppData` + real `Splash` rendered together with `VITE_FIREBASE_*` stubbed blank (the same env state as an unconfigured live deploy), asserting the splash screen actually navigates to `/welcome` instead of timing out. This closes the loop from the isolated `services.ts` fix up through the actual user-visible symptom.
+- A real production build (`npm run build`) with zero `VITE_FIREBASE_*` environment variables set — reproducing the exact broken-deploy condition — still succeeds and produces a normal `dist/` output.
+- Full suite re-run together: `npm run test` 53/53 (48 prior + 5 new across the two regression files), `npm run typecheck` clean, `npm run lint` clean (same 6 pre-existing warnings, 0 new), `npm run test:pwa` 25/25.
+- No UI was changed. This is a one-line logic fix (plus its regression tests) in `services.ts`'s data layer.
+
+**Separately, and outside what a code fix can address:** if the live deploy's actual problem is that `VITE_FIREBASE_*` repository variables were never set, sign-in/sign-up/reports/etc. will still not *function* even though the app is no longer stuck — only `GITHUB_PAGES_PRODUCTION_GUIDE.md` §1's one-time GitHub/Firebase configuration can fix that half. This phase guarantees the app is navigable either way; it cannot itself supply Firebase credentials that were never configured.
+
+---
+
+## Known, permanently-open items (not phase-specific, unlikely to close without infrastructure this sandbox can't provide)
 
 - **The Firestore/Storage emulator cannot be downloaded in this sandbox.** Every phase from 5 onward has unexecuted emulator-dependent tests as a result. This is an environment limitation, not a quality gap in the tests themselves — they're written to the same standard as everything else, just unconfirmed.
 - **Playwright's browser binaries cannot be downloaded in this sandbox either** (`cdn.playwright.dev` — same class of network-allowlist limitation, confirmed the same way: by actually running `npx playwright install chromium` and getting a 403). Phase 11's entire `e2e/` browser-automation suite (52 tests) is affected by this in addition to the emulator blocker above — both would independently prevent it from running here.

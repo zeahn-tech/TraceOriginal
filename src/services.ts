@@ -195,7 +195,26 @@ export const localDb = capabilities.indexedDb ? new TraceDb() : undefined
 // ---------------------------------------------------------------------------
 // Auth / profile / generic Firestore helpers (unchanged from prior pass)
 // ---------------------------------------------------------------------------
-export const observeAuth = (callback:(u:FirebaseUser|null)=>void) => auth ? onAuthStateChanged(auth,callback) : (()=>{})
+// observeAuth ALWAYS resolves the caller's loading state — this is the one
+// thing every consumer of it depends on (see useAppData.ts, which flips
+// `loading` to false only inside this callback, and Splash.tsx, which only
+// navigates away from the splash screen once `loading` is false). Before
+// this fix, an unconfigured/failed Firebase setup (auth undefined) made
+// this a permanent no-op: the callback never fired, `loading` never
+// cleared, and the entire app hung on the splash screen forever with no
+// error shown — public, unauthenticated routes (Welcome, Public Portal,
+// Sign In, About) were unreachable even though none of them need a signed-
+// in user. Firing `callback(null)` (asynchronously, matching Firebase's own
+// always-async contract for onAuthStateChanged) treats "not configured" the
+// same as "signed out": the app proceeds to /welcome, every public route is
+// reachable, and only the auth-requiring actions themselves (session.signIn
+// etc., already wired above to reject with a clear message) fail — not
+// navigation.
+export const observeAuth = (callback:(u:FirebaseUser|null)=>void) => {
+  if (auth) return onAuthStateChanged(auth,callback)
+  const id = setTimeout(() => callback(null), 0)
+  return () => clearTimeout(id)
+}
 export const session = {
   signIn:(email:string,password:string)=> auth ? signInWithEmailAndPassword(auth,email,password) : Promise.reject(new Error('Firebase configuration is required to sign in.')),
   signUp:(email:string,password:string)=> auth ? createUserWithEmailAndPassword(auth,email,password) : Promise.reject(new Error('Firebase configuration is required to sign up.')),
