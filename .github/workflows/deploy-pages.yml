@@ -19,15 +19,103 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-      - run: npm ci
-      - name: Set project Pages base path
-        run: echo "VITE_BASE_PATH=/${GITHUB_REPOSITORY#*/}/" >> "$GITHUB_ENV"
-      - run: npm run build
+
+      - name: Install dependencies (npm ci — requires package-lock.json committed)
+        run: npm ci
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      # Runs a real production build against a synthetic /tracenet-pwa/
+      # base path and inspects the actual dist/ output — asset URLs,
+      # manifest, 404.html, service worker lifecycle, icon dimensions. See
+      # src/pwa-build.test.ts and PWA_PRODUCTION_VALIDATION.md. This is
+      # independent of the repository's real base path computed below, and
+      # leaves a plain (unprefixed) dist/ behind afterward, so it never
+      # interferes with the real production build step that follows.
+      - name: Validate PWA build output (base path, manifest, service worker, 404 recovery)
+        run: npm run test:pwa
+
+      - name: Resolve GitHub Pages base path
+        run: |
+          if [ -n "${{ vars.VITE_BASE_PATH }}" ]; then
+            echo "Using VITE_BASE_PATH from repository variable: ${{ vars.VITE_BASE_PATH }}"
+            echo "VITE_BASE_PATH=${{ vars.VITE_BASE_PATH }}" >> "$GITHUB_ENV"
+          else
+            DERIVED="/${GITHUB_REPOSITORY#*/}/"
+            echo "No VITE_BASE_PATH repository variable set; deriving from repo name: $DERIVED"
+            echo "VITE_BASE_PATH=$DERIVED" >> "$GITHUB_ENV"
+          fi
+
+      # Firebase web config is public-by-design (it identifies the project
+      # to Google's servers; it is not a secret credential — see
+      # DEPLOY_GITHUB.md and SECURITY_REPORT.md), but it still has to be
+      # supplied at build time or Vite bakes in `undefined` for every
+      # VITE_FIREBASE_* value. That previously meant firebaseReady in
+      # src/services.ts evaluated to false in every production deploy and
+      # Authentication (and Firestore/Storage/Functions) silently never
+      # initialized on the live site. Configure these as repository (or
+      # environment) *variables* under Settings > Secrets and variables >
+      # Actions > Variables — see GITHUB_PAGES_PRODUCTION_GUIDE.md.
+      - name: Build
+        run: npm run build
+        env:
+          VITE_FIREBASE_API_KEY: ${{ vars.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ vars.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_STORAGE_BUCKET: ${{ vars.VITE_FIREBASE_STORAGE_BUCKET }}
+          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+          VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID }}
+          VITE_RECAPTCHA_SITE_KEY: ${{ vars.VITE_RECAPTCHA_SITE_KEY }}
+
+      # Fails the deploy fast if the real build (with the repo's actual
+      # base path and whatever Firebase vars are configured) doesn't match
+      # what a working GitHub Pages deployment requires, rather than
+      # discovering it later on the live site.
+      - name: Verify production build artifacts
+        run: |
+          set -e
+          BASE="$VITE_BASE_PATH"
+          echo "Verifying dist/ for base path: $BASE"
+
+          for f in dist/index.html dist/404.html dist/manifest.webmanifest dist/sw.js; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Missing expected build output: $f"
+              exit 1
+            fi
+          done
+
+          if ! grep -q "tracenet-pages-redirect" dist/404.html; then
+            echo "::error::dist/404.html is missing the deep-link redirect logic"
+            exit 1
+          fi
+
+          if ! grep -q "${BASE}assets/" dist/index.html; then
+            echo "::error::dist/index.html does not reference assets under $BASE — check VITE_BASE_PATH / vite.config.ts base handling"
+            exit 1
+          fi
+
+          if ! grep -q "href=\"${BASE}manifest.webmanifest\"" dist/index.html; then
+            echo "::error::dist/index.html manifest link is not prefixed with $BASE"
+            exit 1
+          fi
+
+          if [ -z "${{ vars.VITE_FIREBASE_API_KEY }}" ] || [ -z "${{ vars.VITE_FIREBASE_PROJECT_ID }}" ] || [ -z "${{ vars.VITE_FIREBASE_APP_ID }}" ]; then
+            echo "::warning::One or more required Firebase repository variables (VITE_FIREBASE_API_KEY, VITE_FIREBASE_PROJECT_ID, VITE_FIREBASE_APP_ID) are not set. The deployed app will build and load, but Firebase Authentication/Firestore/Storage will not initialize (firebaseReady will be false). See GITHUB_PAGES_PRODUCTION_GUIDE.md."
+          fi
+
+          echo "Build artifact verification passed."
+
       - uses: actions/configure-pages@v5
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
@@ -41,3 +129,22 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+
+      # GitHub Pages propagation after deploy-pages reports success is
+      # normally near-instant but can occasionally lag by a few minutes,
+      # especially on a repo's very first Pages deployment. This retries
+      # instead of failing the whole workflow on a transient miss.
+      - name: Smoke-test the deployed site
+        run: |
+          URL="${{ steps.deployment.outputs.page_url }}"
+          echo "Requesting $URL"
+          for attempt in 1 2 3 4 5 6; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL" || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "Deployed site responded 200 OK on attempt $attempt"
+              exit 0
+            fi
+            echo "Attempt $attempt: HTTP $STATUS, retrying in 10s..."
+            sleep 10
+          done
+          echo "::warning::Deployed site did not return HTTP 200 within the retry window. Pages propagation can occasionally take longer than this check allows — verify manually at $URL before assuming the deploy failed."
