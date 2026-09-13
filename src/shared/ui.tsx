@@ -1,0 +1,20 @@
+import { type ReactNode } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
+import { ArrowLeft, Home, Bell, Siren, Map as MapIcon, UserCircle, Upload, X, Info } from 'lucide-react'
+import { label, type User } from '../domain'
+
+export function Page({title,eyebrow,children,actions}:{title:string;eyebrow?:string;children:ReactNode;actions?:ReactNode}){const nav=useNavigate();return <main className="page"><header className="topbar"><button className="icon-button" onClick={()=>nav(-1)}><ArrowLeft/></button><div><small>{eyebrow}</small><h1>{title}</h1></div><div className="top-actions">{actions}</div></header>{children}</main>}
+export function Dashboard({user,children,tab}:{user:User;children:ReactNode;tab?:string}){return <main className="dashboard"><header className="dash-header"><div><small>WELCOME BACK</small><h1>{user.name}</h1></div><Link className="icon-button light" to="/profile"><UserCircle/></Link></header>{children}<nav className="bottom-nav"><NavIcon to="/dashboard" icon={<Home/>} name="Home" active={!tab||tab==='home'}/><NavIcon to="/dashboard#alerts" icon={<Bell/>} name="Alerts" active={tab==='alerts'}/><NavIcon to="/sos" icon={<Siren/>} name="SOS"/><NavIcon to="/map" icon={<MapIcon/>} name="Map"/><NavIcon to="/profile" icon={<UserCircle/>} name="Profile"/></nav></main>}
+export function NavIcon({to,icon,name,active}:{to:string;icon:ReactNode;name:string;active?:boolean}){return <Link className={`nav-item ${active?'active':''} ${name==='SOS'?'sos-nav':''}`} to={to}>{icon}<span>{name}</span></Link>}
+export function Brand(){return <div className="brand"><span>TRACENET</span> <b>LIBERIA</b></div>}
+
+export function Input({label:fieldLabel,value,onChange,type='text'}:{label:string;value:string;onChange:(v:string)=>void;type?:string}){return <label className="input"><span>{fieldLabel}</span><input type={type} value={value} onChange={e=>onChange(e.target.value)} required={fieldLabel.includes('Name')||fieldLabel.includes('Email')||fieldLabel==='Password'}/></label>}
+export function TextArea({label:fieldLabel,value,onChange}:{label:string;value:string;onChange:(v:string)=>void}){return <label className="input"><span>{fieldLabel}</span><textarea value={value} onChange={e=>onChange(e.target.value)} required/></label>}
+const labelRole=(role:string)=>role==='LAW_ENFORCER'?'Law Enforcer Access':role==='ADMIN'?'Administrator Access':'Citizen Access'
+export function Select({label:fieldLabel,value,onChange,options}:{label:string;value:string;onChange:(v:string)=>void;options:(string|{value:string;label:string})[]}){return <label className="input"><span>{fieldLabel}</span><select value={value} onChange={e=>onChange(e.target.value)}>{options.map(o=>typeof o==='string'?<option key={o} value={o}>{fieldLabel==='Access Level'?labelRole(o):label(o)}</option>:<option key={o.value} value={o.value}>{o.label}</option>)}</select></label>}
+export function FileInput({label:fieldLabel,accept,onFile,onFiles,multiple}:{label:string;accept:string;multiple?:boolean;onFile?:(f:File|undefined)=>void;onFiles?:(f:FileList|null)=>void}){return <label className="file-input"><Upload/><span>{fieldLabel}</span><input type="file" accept={accept} multiple={multiple} onChange={e=>{onFile?.(e.target.files?.[0]);onFiles?.(e.target.files)}}/></label>}
+export function Notice({icon,children}:{icon:ReactNode;children:ReactNode}){return <div className="notice">{icon}<p>{children}</p></div>}
+export function Dialog({title,close,children}:{title:string;close:()=>void;children:ReactNode}){return <div className="scrim"><section className="dialog"><header><h2>{title}</h2><button className="icon-button" onClick={close}><X/></button></header>{children}</section></div>}
+export function Tabs({tabs,value,set}:{tabs:string[];value:string;set:(v:string)=>void}){return <div className="tabs">{tabs.map(t=><button key={t} className={t===value?'selected':''} onClick={()=>set(t)}>{t}</button>)}</div>}
+export function Stat({n,l}:{n:number;l:string}){return <article className="stat"><b>{n}</b><span>{l}</span></article>}
+export function Empty({message}:{message:string}){return <div className="empty"><Info/><p>{message}</p></div>}

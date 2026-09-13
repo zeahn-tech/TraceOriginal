@@ -1,0 +1,5 @@
+import { useMemo } from 'react'
+import { label, type Report, type Wanted } from '../../domain'
+import { Empty, Page, Stat } from '../../shared/ui'
+
+export function AnalyticsPage({reports,wanted}:{reports:Report[];wanted:Wanted[]}){const byType=useMemo(()=>Object.entries(reports.reduce<Record<string,number>>((m,r)=>{m[label(r.type)]=(m[label(r.type)]||0)+1;return m},{})),[reports]);return <Page title="National Analytics" eyebrow="INTELLIGENCE NODE"><div className="stat-row"><Stat n={reports.length} l="Total Reports"/><Stat n={wanted.length} l="Wanted Notices"/><Stat n={reports.filter(r=>r.status==='RESOLVED').length} l="Resolved"/></div><section className="chart-card"><h2>Crime Type Distribution</h2>{byType.length?<div className="bars">{byType.map(([name,value])=><div key={name}><span>{name}</span><i style={{width:`${Math.max(10,value/reports.length*100)}%`}}/><b>{value}</b></div>)}</div>:<Empty message="No report data is available yet"/>}</section><section className="chart-card"><h2>Operational Statistics</h2><div className="pie"><strong>{reports.filter(r=>r.status==='VERIFIED').length}</strong><span>Verified reports</span></div></section></Page>}

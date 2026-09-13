@@ -1,6 +1,6 @@
 # TraceNet — Implementation Status
 
-**Last updated:** after Phase 9 (GitHub Pages Deployment Production Readiness), complete.
+**Last updated:** after Phase 10 (Production Architecture Refactor), complete.
 **Purpose:** single source of truth for what's been done, what's verified vs. not, and exactly what to pick up next. Read this before starting any new work on this project.
 
 ---
@@ -113,6 +113,19 @@ Reviewed the full deployment chain end-to-end (`npm ci`, `npm run build`, the Ac
 **Not verified (requires a real GitHub Actions run and a live Firebase project this sandbox cannot provide):** the workflow has never actually executed inside GitHub Actions itself (only its constituent steps were each run manually in this sandbox), a real Firebase project's authorized-domains configuration was never exercised against a real deployed URL, and the post-deploy smoke test's retry logic was never exercised against real Pages propagation timing. `GITHUB_PAGES_PRODUCTION_GUIDE.md` documents exactly what a human needs to configure (repository variables, Firebase Console authorized domains, optional custom domain/CNAME) and a manual verification checklist to close this gap after the next live deploy.
 
 **Security note, addressed directly in the guide:** the guide is explicit that `VITE_FIREBASE_*` values belong in repository *variables*, never *secrets*, and never as Firebase Admin/service-account credentials — since everything prefixed `VITE_` is compiled into public client-side JavaScript regardless of which GitHub mechanism holds it.
+
+---
+
+### 10. Production Architecture Refactor — ✅ Complete, executed & passing
+**Deliverable:** `ARCHITECTURE_REFACTOR_REPORT.md`
+
+Decomposed the single 52,893-byte `src/App.tsx` (every screen, dialog, card, and shared primitive in one file) into per-feature modules — `src/features/{auth,dashboard,reports,tips,sos,maps,contacts,analytics,profile,operations,admin,public}/`, plus `src/shared/` for cross-feature primitives and cards, `src/hooks/useAppData.ts`, and `src/routing/` for the route table. `App.tsx` is now a 9-line composition root. Every one of the 17 existing routes, every permission check in `Protected`, every class name, and all existing behavior were preserved exactly — components were relocated character-for-character, not rewritten.
+
+Added `React.lazy()`-based route-level code splitting (`src/routing/lazyRoutes.ts`) for every screen reachable past the splash/welcome screen, and a new `RouteErrorBoundary` (`src/routing/ErrorBoundary.tsx`, keyed by pathname) — the app previously had zero error boundaries anywhere, so any render exception blanked the whole page; a screen crash now shows a recovery screen and any navigation away from it self-heals. No dependency was added (`React.lazy`/`Suspense`/`Component` are already part of the installed `react` version) and no CSS changed (the new fallback/error UI reuses existing `.empty`/`.spin`/`.notice`/`.page` classes).
+
+**Verified:** `npx tsc -b` clean; `npm run build` succeeds with the main JS chunk down from 351.19 kB (113.61 kB gzip) to 317.24 kB (104.90 kB gzip) plus 20 new on-demand route chunks (41.7 kB raw / ~19.5 kB gzip combined, e.g. a CITIZEN who never opens `/admin` now never downloads `AdminPage`'s 5.05 kB chunk at all); `npm run lint` 0 errors (6 pre-existing-cause warnings, same root causes as before the refactor, now attributed to their new files — one incidental new warning was found and fixed during this phase); `npm run test` 23/23 passing (`services.test.ts`/`offline-reporting.test.ts`, unaffected since neither imports `App.tsx`); `npm run test:pwa` 25/25 passing, confirming the production build's manifest/service-worker/base-path/icon output is still correct with the new chunk count (46 precache entries vs. 26 before, expected).
+
+**Not verified (same class of sandbox limitation as prior phases):** a live browser click-through of all 17 routes and a forced-render-error check of the new error boundary's fallback UI — this sandbox's background processes don't survive across tool calls, so a `vite preview` server couldn't be kept alive long enough for a `curl`/browser smoke test. The build artifacts (chunk manifest, precache list) were inspected directly instead. Recommended as a manual follow-up once deployed to a preview URL: confirm each route's chunk loads in the Network tab, and confirm the error boundary's fallback renders correctly for a forced error.
 
 ---
 

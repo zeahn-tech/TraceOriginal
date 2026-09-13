@@ -1,0 +1,8 @@
+import { useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
+import { Phone, RotateCcw, Siren } from 'lucide-react'
+import { DAILY_LIMITS, write } from '../../services'
+import { uuid, type User } from '../../domain'
+import type { Toast } from '../../shared/types'
+
+export function SOSPage({user,setToast}:{user:User;setToast:(t:Toast)=>void}){const nav=useNavigate();const[sequence,setSequence]=useState(1);const transmit=()=>navigator.geolocation?.getCurrentPosition(async p=>{try{await write('alerts',{id:uuid(),title:sequence===1?'SOS ACTIVE: Citizen Distress Signal':'SOS RE-TRANSMITTED: Citizen Distress',content:`Distress signal broadcast from mobile node. Sequence #${sequence}.`,urgency:3,locationName:'Transmitting Citizen Location',latitude:p.coords.latitude,longitude:p.coords.longitude,timestamp:Date.now()},{rateLimit:{uid:user.id,kind:'alerts',limit:DAILY_LIMITS.alerts}});setToast({message:'SOS Emergency Signal Transmitted!'});setSequence(v=>v+1)}catch(err){setToast({message:err instanceof Error?err.message:'Unable to transmit SOS.',kind:'error'})}},()=>setToast({message:'Location is required to transmit an SOS.',kind:'error'}));return <main className="sos-page"><Siren size={96}/><small>EMERGENCY RESPONSE NODE</small><h1>SOS ACTIVE</h1><p>Your distress signal will be broadcast to connected emergency responders with your live location.</p><button className="primary-button danger" onClick={transmit}>TRANSMIT SOS</button><button className="outline-dark" onClick={transmit}><RotateCcw/> RE-TRANSMIT #{sequence}</button><Link className="emergency-contact" to="/contacts"><Phone/> Emergency Contacts</Link><button className="text-danger" onClick={()=>nav(-1)}>CANCEL SOS</button></main>}

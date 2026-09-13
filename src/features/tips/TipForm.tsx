@@ -1,0 +1,9 @@
+import { useState, type FormEvent } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { ShieldAlert } from 'lucide-react'
+import { DAILY_LIMITS, write } from '../../services'
+import { screenContent, uuid, type Report, type User } from '../../domain'
+import { Notice, Page, Select, TextArea } from '../../shared/ui'
+import type { Toast } from '../../shared/types'
+
+export function TipForm({user,reports,setToast}:{user:User;reports:Report[];setToast:(t:Toast)=>void}){const nav=useNavigate();const[reportId,setReportId]=useState('');const[content,setContent]=useState('');const[anonymous,setAnonymous]=useState(true);const submit=async(e:FormEvent)=>{e.preventDefault();if(!reportId||!content){setToast({message:'Select a report and enter your tip.',kind:'error'});return}const ai=screenContent(content);try{await write('tips',{id:uuid(),reportId,content,isAnonymous:anonymous,timestamp:Date.now(),...(anonymous?{}:{submitterId:user.id}),isReviewed:false,aiScreeningStatus:ai.status,aiFlaggedReasons:ai.reasons},{rateLimit:{uid:user.id,kind:'tips',limit:DAILY_LIMITS.tips}});setToast({message:'Your secure tip was submitted.'});nav('/dashboard')}catch(err){setToast({message:err instanceof Error?err.message:'Unable to submit tip.',kind:'error'})}};return <Page eyebrow="SECURE NODE" title="ANONYMOUS TIP"><form className="form" onSubmit={submit}><Notice icon={<ShieldAlert/>}>Your identity is protected when you submit anonymously. Share only information that may help investigators.</Notice><Select label="Related Incident" value={reportId} onChange={setReportId} options={reports.filter(r=>!r.isDeleted).map(r=>({value:r.id,label:r.title}))}/><TextArea label="Tip Information" value={content} onChange={setContent}/><label className="check"><input type="checkbox" checked={anonymous} onChange={e=>setAnonymous(e.target.checked)}/> Keep my identity anonymous</label><button className="primary-button">SEND SECURE TIP</button></form></Page>}
