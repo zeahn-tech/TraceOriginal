@@ -1,5 +1,12 @@
-import { vi } from 'vitest'
+import { afterEach, vi } from 'vitest'
+import { cleanup } from '@testing-library/react'
 import 'fake-indexeddb/auto'
+import '@testing-library/jest-dom/vitest'
+
+// Component tests (routing.test.tsx, auth component tests) render into the
+// jsdom document; without an explicit unmount between tests, later `render()`
+// calls accumulate and duplicate-match queries like getByText/getByRole.
+afterEach(() => cleanup())
 
 // Fake but well-formed Firebase config so firebaseReady evaluates true and
 // services.ts exercises its real "configured" code paths. No network calls

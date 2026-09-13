@@ -1,8 +1,8 @@
 import Dexie, { type EntityTable } from 'dexie'
 import { initializeApp, getApps } from 'firebase/app'
-import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signInWithPopup, sendPasswordResetEmail, signOut, updatePassword, reauthenticateWithCredential, EmailAuthProvider, type User as FirebaseUser } from 'firebase/auth'
-import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, getDoc, onSnapshot, runTransaction, serverTimestamp, setDoc, addDoc, query, orderBy, where, type Unsubscribe } from 'firebase/firestore'
-import { getStorage, ref, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage'
+import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signInWithPopup, sendPasswordResetEmail, signOut, updatePassword, reauthenticateWithCredential, EmailAuthProvider, connectAuthEmulator, type User as FirebaseUser } from 'firebase/auth'
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, getDoc, onSnapshot, runTransaction, serverTimestamp, setDoc, addDoc, query, orderBy, where, connectFirestoreEmulator, type Unsubscribe } from 'firebase/firestore'
+import { getStorage, ref, uploadBytesResumable, getDownloadURL, deleteObject, connectStorageEmulator } from 'firebase/storage'
 import { getFunctions, httpsCallable, type Functions } from 'firebase/functions'
 import type { Alert, Report, Role, Tip, User, Wanted } from './domain'
 
@@ -16,6 +16,19 @@ export const auth = app ? getAuth(app) : undefined
 export const db = app ? initializeFirestore(app,{localCache:persistentLocalCache({tabManager:persistentMultipleTabManager()})}) : undefined
 export const storage = app ? getStorage(app) : undefined
 export const functions: Functions | undefined = app ? getFunctions(app) : undefined
+
+// Opt-in, dev/test-only connection to the local Firebase Emulator Suite.
+// Only takes effect when VITE_USE_FIREBASE_EMULATOR is explicitly set to
+// 'true' at build time (see playwright.config.ts's `preview` webServer) —
+// unset in every normal build, so this block never runs in production and
+// never touches the mocked firebase/* modules used by the vitest suites
+// (services.test.ts etc. mock these modules out entirely and never set the
+// env var, so this branch is simply skipped there, same as `firebaseReady`).
+if (app && import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true') {
+  if (auth) connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true })
+  if (db) connectFirestoreEmulator(db, '127.0.0.1', 8080)
+  if (storage) connectStorageEmulator(storage, '127.0.0.1', 9199)
+}
 
 // ---------------------------------------------------------------------------
 // Firebase App Check — proves a request comes from a genuine instance of

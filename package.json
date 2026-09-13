@@ -11,6 +11,7 @@
     "typecheck": "tsc -b",
     "test": "vitest run",
     "test:pwa": "vitest run --config vitest.pwa.config.ts",
+    "test:e2e": "playwright test",
     "test:security": "npx firebase-tools emulators:exec --project tracenet-emulator-test --only firestore,storage \"npx vitest run --config firebase/emulator-tests/vitest.config.ts\""
   },
   "dependencies": {
@@ -24,6 +25,10 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@firebase/rules-unit-testing": "^4.0.1",
+    "@playwright/test": "^1.63.0",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",

@@ -1,6 +1,6 @@
 # TraceNet — Implementation Status
 
-**Last updated:** after Phase 10 (Production Architecture Refactor), complete.
+**Last updated:** after Phase 11 (Automated QA Suite), complete.
 **Purpose:** single source of truth for what's been done, what's verified vs. not, and exactly what to pick up next. Read this before starting any new work on this project.
 
 ---
@@ -129,9 +129,25 @@ Added `React.lazy()`-based route-level code splitting (`src/routing/lazyRoutes.t
 
 ---
 
-## Known, permanently-open items (not phase-specific, unlikely to close without infrastructure this sandbox can't provide)
+### 11. Automated QA Suite — ✅ Executable layers complete & passing; browser-automation layer written, loadable, NOT executed
+**Deliverable:** `AUTOMATED_QA_REPORT.md`, `src/routing/routing.test.tsx`, `src/features/auth/auth.test.tsx`, `e2e/` (Playwright), `playwright.config.ts`
+
+Full QA pass across every area requested: Authentication, Routing, Role authorization, Reports, Tips, Wanted notices, Alerts, Media, Firebase integration, Offline reports, Offline media, Synchronization, Conflict resolution, PWA behavior. Most of this (Reports/Tips/Wanted/Alerts/Media/Firebase rules-and-Functions/Offline/Sync/Conflict) was already covered by Phases 3–7's existing suites; this phase's actual additions are the two gaps those suites didn't reach, plus the requested browser-automation layer:
+
+- **Routing + role authorization, executed against the real route table** (`src/routing/routing.test.tsx`, 16/16 passing): renders the genuine `AppRoutes`/`Protected` components (not stubs) via `MemoryRouter`, covering unauthenticated redirects, unknown-path/deep-link fallback, the CITIZEN/LAW_ENFORCER/ADMIN role matrix including the unapproved-officer gate and the ADMIN-bypasses-any-role-check behavior, and `Protected`'s guard contract in isolation.
+- **Authentication UI workflows, executed** (`src/features/auth/auth.test.tsx`, 9/9 passing): sign in (success, wrong credentials, Google), sign up (CITIZEN success, LAW_ENFORCER client-side field validation before any Firebase call, duplicate-email failure), and password reset (dialog pre-fill, success, failure) — real component behavior with `firebase/auth` mocked at the network boundary only, same pattern as `services.test.ts`.
+- **Full suite re-verified together:** `npm run test` 48/48 (23 pre-existing + 25 new), `npm run typecheck` clean, `npm run lint` clean (same 6 pre-existing warnings, zero new), `npm run test:pwa` 25/25 — nothing broke, and the UI itself was not modified anywhere to make a test pass (the one non-test source change, described next, is opt-in infrastructure with zero effect unless explicitly enabled).
+- **Browser-automation layer for the 16 named critical workflows** (`e2e/` — `auth.spec.ts`, `reports.spec.ts`, `roles.spec.ts`, `pwa.spec.ts`, 52 tests across 4 role personas × 2 viewport projects): covers sign up, sign in, password reset, report submission, report+image, report+video, report+audio, offline report, reconnection, media synchronization, law-enforcement workflow, admin workflow, PWA installation, refresh/update-prompt, deep link, and unauthorized access. Written against Playwright, seeding Citizen/Law-Enforcer/Admin fixtures directly into a local Firebase Emulator via its REST API (`e2e/helpers.ts`) since the app's own sign-up flow can only ever create a CITIZEN or a pending officer by design.
+  - **Verified without execution:** `npx tsc` type-checks the whole `e2e/` tree clean, and — a step beyond simple type-checking — `npx playwright test --list` successfully loads every spec file and enumerates all 52 tests by name, confirming the suite's structure, imports, and fixtures resolve correctly end-to-end at the tooling level.
+  - **NOT executed, for two independent, verified (not assumed) reasons specific to this sandbox:** `npx playwright install chromium` fails with a 403 — `cdn.playwright.dev` is not in this sandbox's network egress allowlist. Separately, `firebase emulators:start` (needed for both this suite and `test:security`) fails with the identical pre-existing 403 against `storage.googleapis.com` documented since Phase 5. Either blocker alone would prevent execution; both are present. Neither is a defect in the suite — see `AUTOMATED_QA_REPORT.md` for the full per-area verification-level table.
+- **One small, additive, opt-in change to non-test source** (`src/services.ts`): added `connectAuthEmulator`/`connectFirestoreEmulator`/`connectStorageEmulator` wiring, gated behind `import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true'`. This flag is never set in production, in the existing vitest suites (which mock `firebase/*` out entirely and never set it), or in any build in this session — confirmed by grepping a real production build's output bundle for `connectAuthEmulator` and finding zero occurrences (Rollup tree-shakes the entire gated block away when the flag is absent at build time). It exists solely so the `e2e/` suite has something to connect to once a future session has real network access.
+
+**Action needed from the user:** run `npm run test:e2e` from a machine with normal internet access (after `npx playwright install chromium` and with the Firebase Emulator Suite reachable); report back the pass/fail output. This is the single remaining unexecuted piece of the QA suite requested.
+
+---
 
 - **The Firestore/Storage emulator cannot be downloaded in this sandbox.** Every phase from 5 onward has unexecuted emulator-dependent tests as a result. This is an environment limitation, not a quality gap in the tests themselves — they're written to the same standard as everything else, just unconfirmed.
+- **Playwright's browser binaries cannot be downloaded in this sandbox either** (`cdn.playwright.dev` — same class of network-allowlist limitation, confirmed the same way: by actually running `npx playwright install chromium` and getting a 403). Phase 11's entire `e2e/` browser-automation suite (52 tests) is affected by this in addition to the emulator blocker above — both would independently prevent it from running here.
 - **`alerts` schema cannot distinguish an admin's official broadcast from a citizen's SOS signal** — both go through the same collection with no `type`/`source` field. Documented, not fixed, since fixing it is a schema change and every phase has been instructed not to change the application design.
 - **No server-side orphan-media cleanup** — if a Storage upload succeeds but the Firestore write never completes (device never reconnects), the file has no scheduled cleanup. Would need a Cloud Scheduler + Function, not yet built.
 - **The GitHub Actions workflow has never executed in real GitHub Actions, and no real Firebase project's authorized-domain configuration has been exercised against a live deployed URL.** Every constituent command was run and verified manually in this sandbox (see Phase 9), but a live end-to-end run — real Actions runner, real Pages deploy, real Firebase Console configuration — has not happened yet. `GITHUB_PAGES_PRODUCTION_GUIDE.md` §3 is the checklist for closing this gap after the next push to `main`.
@@ -154,6 +170,12 @@ npm run test:security
 cd firebase/functions
 npm ci && npm test                # offline suite — should already pass; re-confirm
 npm run test:integration          # emulator-backed integration test — never yet run
+
+# Browser-automation E2E suite (Phase 11) — requires BOTH a downloaded
+# Playwright browser (`npx playwright install chromium`) AND the Firebase
+# Emulator Suite reachable at the same time
+cd ..  # back to repo root
+npm run test:e2e
 ```
 
 Additionally, once deployed to a live GitHub Pages URL (Phase 8's PWA work cannot be fully verified without this):
