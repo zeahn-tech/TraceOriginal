@@ -2,7 +2,7 @@
 
 ## 0. Status, stated plainly up front
 
-Every item on the requested checklist is implemented, and the parts that can be verified in this sandbox (business logic, the whole client app) are — 23/23 app tests and 54/54 Cloud Functions tests, all actually executed and passing. The parts that require a real Firebase emulator (the `firestore.rules` quota/limit enforcement) are written, carefully reasoned through, and confirmed to load/type-check correctly, but **not executed** — this sandbox cannot reach `storage.googleapis.com` to download the emulator, the same limitation documented in every prior security-related phase of this project (see `IMPLEMENTATION_STATUS.MD`). This is stated once here and not re-litigated per section below; assume it applies to every `firestore.rules` claim unless a section says otherwise.
+Every item on the requested checklist is implemented, and the parts that can be verified in this sandbox (business logic, the whole client app) are — 23/23 app tests and 54/54 Cloud Functions tests, all actually executed and passing. The parts that require a real Firebase emulator (the `firestore.rules` quota/limit enforcement) are written, carefully reasoned through, and confirmed to load/type-check correctly, but **not executed** — this sandbox cannot reach `storage.googleapis.com` to download the emulator, the same limitation documented in every prior security-related phase of this project (see `IMPLIMENTATION_STATUS.MD`). This is stated once here and not re-litigated per section below; assume it applies to every `firestore.rules` claim unless a section says otherwise.
 
 ---
 
@@ -228,7 +228,7 @@ None of these were caught by reasoning alone; all three were caught by actually 
 
 ## 12. What this phase does not claim
 
-- The `firestore.rules` additions in this phase (the entire quota mechanism) have not been executed against a real emulator — see §0 and `IMPLEMENTATION_STATUS.MD` for exactly what to run and report back.
+- The `firestore.rules` additions in this phase (the entire quota mechanism) have not been executed against a real emulator — see §0 and `IMPLIMENTATION_STATUS.MD` for exactly what to run and report back.
 - App Check enforcement toward Firestore/Storage requires a manual Firebase Console step this codebase cannot perform.
 - Password policy configuration requires a manual Firebase Console/Identity Platform step this codebase cannot perform.
 - The `alerts` schema still cannot distinguish an admin broadcast from a citizen SOS at the data-model level (documented since `FIREBASE_SECURITY_IMPLEMENTATION.md`, unchanged here — still a schema change, still out of scope for "don't change the application design").
