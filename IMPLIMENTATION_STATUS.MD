@@ -1,6 +1,6 @@
 # TraceNet — Implementation Status
 
-**Last updated:** after Phase 12 (Splash-Screen Deadlock Fix), complete.
+**Last updated:** after Phase 13 (Cross-Platform Validation), complete.
 **Purpose:** single source of truth for what's been done, what's verified vs. not, and exactly what to pick up next. Read this before starting any new work on this project.
 
 ---
@@ -166,12 +166,36 @@ Full QA pass across every area requested: Authentication, Routing, Role authoriz
 
 ---
 
+### 13. Cross-Platform Validation — ✅ Complete, code-level analysis + existing suite re-verified; live device testing NOT executed
+**Deliverable:** `CROSS_PLATFORM_TEST_REPORT.md`
+
+Requested scope: validate the production PWA (install, auth, navigation, reports, camera, microphone, image/video/audio upload, offline mode, reconnection, media playback, notifications, geolocation, responsive behavior) across Android Chrome, iPhone Safari, iPad Safari, Windows Chrome, Windows Edge, macOS Safari, macOS Chrome, and Linux Chrome/Firefox.
+
+**What was actually done, and the epistemic line drawn explicitly in the report itself:** this sandbox has no real devices or browser binaries (same `cdn.playwright.dev` 403 blocker documented since Phase 11). Every platform-specific claim in the report is tagged as one of: code-verified (read directly from source, or a real `npm run build`/`npm run test`/`npm run test:pwa` run in this sandbox), documented platform behavior (a publicly-verifiable vendor fact, e.g. "desktop Firefox never fires `beforeinstallprompt`"), or requires manual device verification (listed explicitly, never assumed to pass). No platform-behavior claim is phrased as something observed on a device in this session, because none was available to observe.
+
+**Real bugs found, platform-independent (affect every platform equally, not a Safari-vs-Chrome issue):**
+- **HIGH:** `MediaThumb` (`src/components/MediaAsset.tsx`) renders attached videos `muted`, with no `controls` and no click handler — there is currently no way, on any browser, to actually watch a video attachment. Audio attachments are unaffected (`<audio controls>`). Not fixed in this phase — this task's scope was validation, not a UI redesign, and fixing it (add `controls`, drop the forced `muted`, and/or a full-size viewer) is a real product decision, not a compatibility patch.
+- **MEDIUM:** `captureMedia()` (forces the native camera via `input.capture='environment'`) and `recordMedia()` (a full `getUserMedia`/`MediaRecorder` in-page recorder with proper Safari-aware codec fallback) both already exist in `src/services.ts` but are never called from any component — grepped, confirmed zero call sites outside `services.ts` itself. The shipped `ReportForm`/`WantedForm` UI uses a plain `<input type="file" accept="image/*,video/*,audio/*">` with no `capture` attribute, which is exactly the config most likely to produce inconsistent camera/mic access on iOS Safari (see below). Not wired up in this phase, same reasoning as above.
+- **LOW:** no persistent "you're offline" indicator anywhere in the UI — offline state is only ever surfaced reactively, via a one-time post-submit toast. The actual offline-first pipeline (Phases 3/4) is unaffected and still correct; this is a UX gap adjacent to it.
+- **Scope-clarifying, not a bug:** grepped the entire `src/` tree for `Notification`/`PushManager`/`push` — there is no Notifications API or web-push implementation anywhere. The "receive instant notifications" line in the dashboard carousel is marketing copy only. The report states this plainly rather than marking "Notifications" as passing on any platform.
+
+**Named, vendor-documented platform limitations (not bugs in this app):** no `beforeinstallprompt` on iOS/iPadOS Safari (the existing manual "Add to Home Screen" banner in `InstallPrompt.tsx` already handles this correctly, with one caveat below); no PWA install support at all in desktop Firefox; iOS Safari's file-input action sheet behaving less predictably than Android's for a combined `image/*,video/*,audio/*` accept string; the Background Sync API being Chromium-only (already correctly documented in `src/sw.ts` since Phase 8, with the universal `online`-event fallback doing the real work everywhere); and no dedicated tablet breakpoint (`styles.css` has one `min-width:760px` query, so an iPad in portrait gets the same 2-column treatment as a narrow desktop window rather than a tablet-tuned layout — not broken, just undifferentiated).
+
+**Verified in this phase (executed, not assumed):** full re-run of the existing suite confirms zero regressions from Phase 12's baseline — `npm run typecheck` clean, `npm run lint` 0 errors / same 6 pre-existing warnings, `npm run test` 53/53, `npm run test:pwa` 25/25, and a real `npm run build` inspected directly (manifest icons/display/orientation, 46 precache entries, all match Phase 8/9's prior fixes with no drift).
+
+**Not verified, and named explicitly rather than assumed (requires a human with physical devices):** actual iOS/iPadOS action-sheet behavior for the camera/mic file input; whether the iOS install banner's user-agent sniff fires on a stock iPad (which defaults to a desktop-class UA string unless "Request Mobile Website" is toggled); real orientation-lock behavior for an installed standalone iOS PWA; live reproduction of the video-playback gap on an actual touchscreen; and confirmation that desktop Firefox shows no install affordance at all. All five are listed as a concrete checklist in `CROSS_PLATFORM_TEST_REPORT.md` §7.
+
+**Action needed from the user:** work through `CROSS_PLATFORM_TEST_REPORT.md` §7 on real hardware and report back results; decide whether the §2.1 (video playback) and §2.2 (camera/mic wiring) findings should become a follow-up phase, since fixing them is a product/UI decision outside this validation pass's scope.
+
+---
+
 ## Known, permanently-open items (not phase-specific, unlikely to close without infrastructure this sandbox can't provide)
 
 - **The Firestore/Storage emulator cannot be downloaded in this sandbox.** Every phase from 5 onward has unexecuted emulator-dependent tests as a result. This is an environment limitation, not a quality gap in the tests themselves — they're written to the same standard as everything else, just unconfirmed.
 - **Playwright's browser binaries cannot be downloaded in this sandbox either** (`cdn.playwright.dev` — same class of network-allowlist limitation, confirmed the same way: by actually running `npx playwright install chromium` and getting a 403). Phase 11's entire `e2e/` browser-automation suite (52 tests) is affected by this in addition to the emulator blocker above — both would independently prevent it from running here.
 - **`alerts` schema cannot distinguish an admin's official broadcast from a citizen's SOS signal** — both go through the same collection with no `type`/`source` field. Documented, not fixed, since fixing it is a schema change and every phase has been instructed not to change the application design.
 - **No server-side orphan-media cleanup** — if a Storage upload succeeds but the Firestore write never completes (device never reconnects), the file has no scheduled cleanup. Would need a Cloud Scheduler + Function, not yet built.
+- **No real Android/iOS device or desktop browser has ever been exercised against this app.** Phase 13's cross-platform report is a code-level analysis plus vendor-documented platform facts, not live device testing — this sandbox has no physical devices or browser binaries any more than it has emulator or Playwright-browser network access. `CROSS_PLATFORM_TEST_REPORT.md` §7 is the checklist for closing this gap.
 - **The GitHub Actions workflow has never executed in real GitHub Actions, and no real Firebase project's authorized-domain configuration has been exercised against a live deployed URL.** Every constituent command was run and verified manually in this sandbox (see Phase 9), but a live end-to-end run — real Actions runner, real Pages deploy, real Firebase Console configuration — has not happened yet. `GITHUB_PAGES_PRODUCTION_GUIDE.md` §3 is the checklist for closing this gap after the next push to `main`.
 
 ---
