@@ -43,8 +43,9 @@ deliberately redact.
 | `VITE_FIREBASE_AUTH_DOMAIN` | Yes | same location |
 | `VITE_FIREBASE_PROJECT_ID` | Yes | same location |
 | `VITE_FIREBASE_STORAGE_BUCKET` | Yes, if the app reads/writes Storage | same location |
-| `VITE_FIREBASE_MESSAGING_SENDER_ID` | Only if using Cloud Messaging | same location |
+| `VITE_FIREBASE_MESSAGING_SENDER_ID` | Yes, now that push notifications use Cloud Messaging (see below) | same location |
 | `VITE_FIREBASE_APP_ID` | Yes | same location |
+| `VITE_FIREBASE_VAPID_KEY` | Only if push notifications should work | Firebase Console → Project settings → Cloud Messaging → Web configuration → Web Push certificates |
 | `VITE_RECAPTCHA_SITE_KEY` | Only if Firebase App Check is enabled | Firebase Console → App Check → your web app → reCAPTCHA v3 site key |
 | `VITE_BASE_PATH` | Optional override | See §1.4 |
 
@@ -54,6 +55,15 @@ but `firebaseReady` in `src/services.ts` evaluates to `false` and
 Authentication/Firestore/Storage/Functions never initialize on the live
 site — the workflow's "Verify production build artifacts" step emits a
 `::warning::` in this case so it isn't a silent failure.
+
+If `VITE_FIREBASE_VAPID_KEY` specifically is left unset, everything else
+in the app works normally — `enablePushNotifications()` (`src/push.ts`)
+simply fails with a clear "not configured for this deployment" message
+when someone taps "Enable Push Notifications" in Profile settings,
+rather than the feature being broken or the button being confusingly
+absent. There is no build-time warning for this one, unlike the three
+above, because push notifications are an enhancement, not something the
+rest of the app depends on functioning.
 
 **Never put the Firebase Admin SDK service account key, any private key, or
 any server-side secret in a `VITE_*` variable.** Everything prefixed
@@ -102,6 +112,32 @@ If using a custom domain: add a `public/CNAME` file containing the domain,
 configure the DNS records GitHub Pages documents for apex or `www` domains,
 and set `VITE_BASE_PATH=/` (§1.4) since the app is then served from the
 domain root, not a repo subpath. Also re-check §1.5.
+
+### 1.7 Cloud Functions (deployed separately from GitHub Pages)
+
+The GitHub Pages workflow deploys only the static frontend — it never runs
+`firebase deploy`. The eight Cloud Functions in `firebase/functions/` (see
+`FIREBASE_FUNCTIONS_ARCHITECTURE.md`) need their own deploy, run manually
+(or from a separate workflow this project doesn't currently have):
+
+```bash
+cd firebase/functions && npm ci && npm run build
+firebase deploy --only functions
+```
+
+`notifyOnAlertCreated` is a **Firestore trigger** (`onDocumentCreated`),
+not a callable function like the other seven — this specifically requires
+the **Eventarc API** to be enabled on the Firebase project (Google Cloud
+Console → APIs & Services → enable "Eventarc API"), which is a one-time
+Console-side setup step `firebase deploy` does not do for you. If it's not
+enabled, the deploy itself will fail with a clear error naming Eventarc,
+not silently skip the function.
+
+Push notifications also require the `VITE_FIREBASE_VAPID_KEY` repository
+variable (§1.3) to be set for the *frontend* build — the Function-side
+deploy above and the frontend env var are two independent prerequisites,
+and either one being missing means push notifications don't work even
+though everything else in the app does.
 
 ---
 
@@ -178,6 +214,11 @@ real browser against the live URL:
 - [ ] Push a follow-up commit and reload the already-open tab — the in-app
       "Update available" prompt should appear rather than silently serving
       stale assets forever.
+- [ ] If Cloud Functions were deployed (§1.7) and `VITE_FIREBASE_VAPID_KEY`
+      is set: Profile → "Enable Push Notifications" → accept the browser
+      permission prompt → confirm no error toast appears. Have an admin
+      publish a test alert (or trigger SOS) and confirm a real push
+      notification arrives, including with the tab in the background.
 
 ---
 
@@ -192,3 +233,5 @@ real browser against the live URL:
 | `npm ci` fails in CI | `package-lock.json` is missing or out of sync with `package.json` — regenerate it locally with `npm install` and commit it. |
 | Workflow fails at "Validate PWA build output" | A real regression in build output — read the specific failing assertion in `src/pwa-build.test.ts`; it's written to name exactly what broke. |
 | Custom domain shows GitHub's default 404 or doesn't resolve | DNS not yet propagated, or `public/CNAME` missing/incorrect (§1.6). |
+| "Enable Push Notifications" always fails with "not configured for this deployment" | `VITE_FIREBASE_VAPID_KEY` isn't set for the frontend build (§1.3) — this is separate from the other `VITE_FIREBASE_*` variables and easy to miss since the rest of the app works fine without it. |
+| Push permission is granted but no notification ever arrives | `subscribeToAlerts`/`notifyOnAlertCreated` weren't deployed (§1.7), or the Eventarc API isn't enabled on the Firebase project — check the Cloud Functions deploy output/logs, not the frontend. |

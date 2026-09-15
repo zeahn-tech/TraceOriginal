@@ -5,6 +5,8 @@ import { cleanupOutdatedCaches, matchPrecache, precacheAndRoute } from 'workbox-
 import { registerRoute, NavigationRoute, setCatchHandler } from 'workbox-routing'
 import { NetworkFirst, StaleWhileRevalidate } from 'workbox-strategies'
 import { ExpirationPlugin } from 'workbox-expiration'
+import { initializeApp } from 'firebase/app'
+import { getMessaging, onBackgroundMessage } from 'firebase/messaging/sw'
 declare let self: ServiceWorkerGlobalScope
 
 // clientsClaim() + cleanupOutdatedCaches() + precacheAndRoute() are safe to
@@ -63,4 +65,61 @@ setCatchHandler(async ({request})=>request.mode==='navigate' ? (await matchPreca
 self.addEventListener('sync',event=>{
 	if(event.tag!=='tracenet-media-sync') return
 	event.waitUntil(self.clients.matchAll({type:'window',includeUncontrolled:true}).then(clients=>clients.forEach(client=>client.postMessage({type:'tracenet-media-sync'}))))
+})
+
+// Push notifications (Firebase Cloud Messaging), guarded exactly the way
+// src/services.ts guards its own Firebase bootstrap: this project must
+// still build and run correctly with no Firebase project configured at
+// all (firebaseReady === false client-side), so every one of these values
+// being empty/undefined must be a silent no-op here too, never a thrown
+// error that could take down the ENTIRE service worker (which would also
+// break unrelated caching/offline behavior having nothing to do with
+// push). `messagingSenderId` is deliberately the one checked here, since
+// it's the one FCM specifically cannot function without, and it's already
+// required to be set for the client-side messaging bootstrap in
+// services.ts to proceed past its own firebaseReady check.
+const fcmConfig = {
+	apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+	authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+	projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+	storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+	appId: import.meta.env.VITE_FIREBASE_APP_ID,
+	messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+}
+if(fcmConfig.apiKey && fcmConfig.projectId && fcmConfig.appId && fcmConfig.messagingSenderId){
+	try {
+		const messaging = getMessaging(initializeApp(fcmConfig))
+		// A push arriving while no tab has focus (or none is open at all) has
+		// no in-page code around to react to it — this is the ONLY place a
+		// background push can be turned into something the person actually
+		// sees, which is why this exists here rather than solely in
+		// src/push.ts's onMessage (foreground) handler.
+		onBackgroundMessage(messaging, payload => {
+			self.registration.showNotification(payload.notification?.title ?? 'TraceNet Alert', {
+				body: payload.notification?.body ?? 'A new public safety alert has been published.',
+				icon: 'icons/pwa-192.png',
+				badge: 'icons/pwa-192.png',
+				tag: 'tracenet-alert',
+			})
+		})
+	} catch {
+		// Never let a messaging bootstrap failure (e.g. a malformed/partial
+		// config) take down the rest of this service worker — caching and
+		// offline support must keep working regardless.
+	}
+}
+
+// Tapping a push notification should focus an already-open tab rather than
+// stacking up a fresh one every time — falls back to opening the app at
+// its own scope (relative path, so this works unmodified under any
+// GitHub Pages base path) if none is open.
+self.addEventListener('notificationclick', event => {
+	event.notification.close()
+	event.waitUntil(
+		self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+			const existing = list.find(client => 'focus' in client)
+			if(existing) return existing.focus()
+			return self.clients.openWindow('./')
+		}),
+	)
 })

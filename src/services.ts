@@ -11,7 +11,7 @@ import type { Alert, Report, Role, Tip, User, Wanted } from './domain'
 // ---------------------------------------------------------------------------
 const config = { apiKey:import.meta.env.VITE_FIREBASE_API_KEY, authDomain:import.meta.env.VITE_FIREBASE_AUTH_DOMAIN, projectId:import.meta.env.VITE_FIREBASE_PROJECT_ID, storageBucket:import.meta.env.VITE_FIREBASE_STORAGE_BUCKET, appId:import.meta.env.VITE_FIREBASE_APP_ID, messagingSenderId:import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID }
 export const firebaseReady = Boolean(config.apiKey && config.projectId && config.appId)
-const app = firebaseReady ? (getApps()[0] ?? initializeApp(config)) : undefined
+export const app = firebaseReady ? (getApps()[0] ?? initializeApp(config)) : undefined
 export const auth = app ? getAuth(app) : undefined
 export const db = app ? initializeFirestore(app,{localCache:persistentLocalCache({tabManager:persistentMultipleTabManager()})}) : undefined
 export const storage = app ? getStorage(app) : undefined
@@ -367,23 +367,48 @@ async function compressImage(file:File):Promise<Blob>{
 export function createMediaPreview(file:Blob){ return URL.createObjectURL(file) }
 export function revokeMediaPreview(url:string){ URL.revokeObjectURL(url) }
 
+/**
+ * Opens the platform's native file/camera chooser. `capture='environment'`
+ * is set for both image AND video (not just image, as before) — this is
+ * the standards-based way to ask a mobile browser to launch the rear
+ * camera directly instead of a generic file/gallery picker; it's simply
+ * ignored (falls back to an ordinary file picker) on desktop browsers and
+ * on any platform that doesn't support it, so it's always safe to set.
+ * Actually wired into the UI now — see CaptureButtons.tsx.
+ */
 export function captureMedia(kind:MediaKind,accept:string){
-  const input=document.createElement('input'); input.type='file'; input.accept=accept; input.multiple=true; if(kind==='image') input.capture='environment'; input.click()
+  const input=document.createElement('input'); input.type='file'; input.accept=accept; input.multiple=true; if(kind==='image' || kind==='video') input.capture='environment'; input.click()
   return new Promise<File[]>((resolve,reject)=>{ input.onchange=()=>resolve(Array.from(input.files ?? [])); input.onerror=()=>reject(new Error('Media selection failed.')) })
 }
 
-export async function recordMedia(kind:Exclude<MediaKind,'image'>,durationMs=60_000):Promise<File>{
-  if(!capabilities.mediaRecorder) throw new Error('Recording is not supported by this browser.')
-  const stream=await navigator.mediaDevices.getUserMedia(kind==='video' ? {video:true,audio:true} : {audio:true})
-  const preferred = kind==='video' ? ['video/webm;codecs=vp9,opus','video/webm','video/mp4'] : ['audio/webm;codecs=opus','audio/webm','audio/mp4']
-  const mimeType=preferred.find(type=>MediaRecorder.isTypeSupported(type)) ?? ''
-  const recorder=new MediaRecorder(stream,mimeType ? {mimeType} : undefined); const chunks:BlobPart[]=[]
-  return new Promise((resolve,reject)=>{
-    const timer=window.setTimeout(()=>recorder.stop(),durationMs)
-    recorder.ondataavailable=event=>{ if(event.data.size) chunks.push(event.data) }
-    recorder.onerror=()=>{ window.clearTimeout(timer); stream.getTracks().forEach(track=>track.stop()); reject(new Error('Media recording failed.')) }
-    recorder.onstop=()=>{ window.clearTimeout(timer); stream.getTracks().forEach(track=>track.stop()); const type=recorder.mimeType || (kind==='video' ? 'video/webm' : 'audio/webm'); resolve(new File([new Blob(chunks,{type})],`${kind}-${Date.now()}.webm`,{type})) }
-    recorder.start(250)
+export interface MediaRecording { stream:MediaStream; stop():void; result:Promise<File> }
+
+/**
+ * Starts an in-page camera/mic recording via getUserMedia + MediaRecorder,
+ * with Safari-aware codec fallback (vp9/opus webm, then plain webm, then
+ * mp4). Unlike a one-shot recorder, this returns a live controller so the
+ * UI can show a real-time preview and a Stop button — `result` resolves
+ * with the finished File whenever `stop()` is called, or automatically
+ * once `maxDurationMs` elapses as a hard safety cap either way. This is
+ * the in-browser recording path used by CaptureButtons.tsx for desktop
+ * webcams and any device where a person prefers recording without leaving
+ * the app, as distinct from `captureMedia`'s native-camera-app handoff.
+ */
+export function startRecording(kind:Exclude<MediaKind,'image'>, maxDurationMs=120_000):Promise<MediaRecording>{
+  if(!capabilities.mediaRecorder) return Promise.reject(new Error('Recording is not supported by this browser.'))
+  return navigator.mediaDevices.getUserMedia(kind==='video' ? {video:true,audio:true} : {audio:true}).then(stream=>{
+    const preferred = kind==='video' ? ['video/webm;codecs=vp9,opus','video/webm','video/mp4'] : ['audio/webm;codecs=opus','audio/webm','audio/mp4']
+    const mimeType=preferred.find(type=>MediaRecorder.isTypeSupported(type)) ?? ''
+    const recorder=new MediaRecorder(stream,mimeType ? {mimeType} : undefined); const chunks:BlobPart[]=[]
+    let settled=false
+    const result=new Promise<File>((resolve,reject)=>{
+      const timer=window.setTimeout(()=>{ if(recorder.state!=='inactive') recorder.stop() },maxDurationMs)
+      recorder.ondataavailable=event=>{ if(event.data.size) chunks.push(event.data) }
+      recorder.onerror=()=>{ if(settled) return; settled=true; window.clearTimeout(timer); stream.getTracks().forEach(track=>track.stop()); reject(new Error('Media recording failed.')) }
+      recorder.onstop=()=>{ if(settled) return; settled=true; window.clearTimeout(timer); stream.getTracks().forEach(track=>track.stop()); const type=recorder.mimeType || (kind==='video' ? 'video/webm' : 'audio/webm'); resolve(new File([new Blob(chunks,{type})],`${kind}-${Date.now()}.webm`,{type})) }
+      recorder.start(250)
+    })
+    return { stream, stop:()=>{ if(recorder.state!=='inactive') recorder.stop() }, result }
   })
 }
 
@@ -739,3 +764,8 @@ export const setUserStatus = callFunction<{ uid:string; status:string }, { ok:tr
 export const verifyWantedNotice = callFunction<{ id:string; verify:boolean }, { ok:true }>('verifyWantedNotice')
 export const publishAlert = callFunction<{ title:string; content:string; urgency:number; locationName:string; county?:string; latitude:number; longitude:number }, { ok:true; id:string }>('publishAlert')
 export const transitionReportStatus = callFunction<{ reportId:string; status:string }, { ok:true }>('transitionReportStatus')
+// Not role-gated server-side (see subscribeToAlerts.ts) — any signed-in
+// user may subscribe their own device's push token to the public 'alerts'
+// topic; there is nothing privileged about opting a device in to receiving
+// the same official broadcasts/SOS alerts every user already sees in-app.
+export const subscribeToAlerts = callFunction<{ token:string }, { ok:true }>('subscribeToAlerts')

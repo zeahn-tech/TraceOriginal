@@ -8,3 +8,5 @@ export { setUserStatus } from './functions/setUserStatus';
 export { verifyWantedNotice } from './functions/verifyWantedNotice';
 export { publishAlert } from './functions/publishAlert';
 export { transitionReportStatus } from './functions/transitionReportStatus';
+export { subscribeToAlerts } from './functions/subscribeToAlerts';
+export { notifyOnAlertCreated } from './functions/notifyOnAlertCreated';

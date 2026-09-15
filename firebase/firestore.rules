@@ -312,5 +312,16 @@ service cloud.firestore {
     match /function_calls/{requestId} {
       allow read, write: if false;
     }
+
+    // -----------------------------------------------------------------
+    // /function_rate_limits/{uid_action} — internal per-caller rate
+    // counters for privileged Cloud Functions (see
+    // firebase/functions/src/lib/rateLimit.ts). Same reasoning as
+    // /function_calls above: entirely opaque to every client, written
+    // only by the Admin SDK.
+    // -----------------------------------------------------------------
+    match /function_rate_limits/{id} {
+      allow read, write: if false;
+    }
   }
 }

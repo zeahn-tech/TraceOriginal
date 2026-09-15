@@ -12,6 +12,16 @@ What *was* done, concretely:
 
 Three real, code-verifiable functional gaps were found this way (§2.1–2.3) — independent of any platform-specific behavior. Everything else in this report is either a confirmed code fact or a named platform limitation with a concrete manual-verification step. No visual design was changed to compensate for any platform difference (per the task's instruction) — every fix below is behavioral, not stylistic.
 
+**Remediation update (read this before §2/§3 below):** every issue this report originally flagged as unfixed has since been fixed, in a follow-up "fix every issue found and implement to production-grade standards" pass. §2.1–2.3 and §3 are left exactly as originally written below (including their original "not fixed in this phase" language) as an accurate historical record of what was found and when — but that language is now out of date. What actually changed:
+
+- **§2.1 (video playback)** — fixed. `MediaThumb` (`src/components/MediaAsset.tsx`) is now clickable/focusable and opens a full-size, unmuted `<video controls>` in a dialog (reusing the existing `Dialog` component). The small inline thumbnail stays muted/non-interactive by design (it's a preview, not a player), but the video is now genuinely watchable, which it never was before. The single-root-element/CSS-selector-preservation property this report implicitly relied on (`.thumbs img`, `.wanted-card>img`) was kept intact — no stylesheet changes were needed.
+- **§2.2 (camera/mic wiring)** — fixed. A new `CaptureButtons` component (`src/shared/CaptureButtons.tsx`) wires up `captureMedia` (native camera handoff, now also set for video, not just images) and a new `startRecording` (an improved, stoppable version of the formerly-dead-code `recordMedia`, with a live in-dialog preview) into `ReportForm`, `WantedForm`, and `SignUpPage`. This also closes the desktop gap this report didn't originally emphasize enough: desktop browsers have no native camera app to hand off to, so `startRecording`'s in-page `getUserMedia`/`MediaRecorder` path is what makes camera/mic capture possible on desktop at all, not just a mobile convenience.
+- **§2.3 (offline indicator)** — fixed. A new `OfflineBanner` component (`src/components/OfflineBanner.tsx`), mounted at the top of `App.tsx`, shows a persistent, `env(safe-area-inset-top)`-aware banner for the entire time `navigator.onLine` is false, using the same standards-based `online`/`offline` events the sync engine already relied on.
+- **§3 (notifications)** — implemented for real. Firebase Cloud Messaging is now wired end-to-end: a "Enable Push Notifications" control in Profile settings (`src/push.ts`), a new `subscribeToAlerts` Cloud Function, a new `notifyOnAlertCreated` Firestore trigger that sends a real push for every new alert (SOS or admin broadcast), and background-push handling in `src/sw.ts`. See `FIREBASE_FUNCTIONS_ARCHITECTURE.md` §11.2 for the backend half of this in detail, and §7 (updated below) for what specifically still can't be verified from this sandbox (a real device actually receiving a push).
+- A **separate, more serious problem, unrelated to any of the above**, was also found and fixed during that pass: the entire Cloud Functions codebase (`firebase/functions/`) could not compile at all — every function imported from a `lib/` directory that had never been committed to the repository, at any point. This had nothing to do with cross-platform behavior specifically, but it meant every privileged backend operation (officer approval, role changes, alert publishing, etc.) was broken. See `FIREBASE_FUNCTIONS_ARCHITECTURE.md` §11.1 for the full account.
+
+All of the above was re-verified the same way this report insists on: `npm run typecheck`/`lint`/`build`/`test` (60/60, up from 53/53)/`test:pwa` (25/25) on the client, and `npm run build`/`npm test` (65/65, up from a claimed-but-actually-broken 54/54) inside `firebase/functions/`.
+
 ---
 
 ## 1. How to read the verification tags in this document
@@ -23,6 +33,8 @@ Three real, code-verifiable functional gaps were found this way (§2.1–2.3) �
 ---
 
 ## 2. Real bugs found (platform-independent — affect every platform equally)
+
+**All three of the following are now fixed — see the remediation update in §0.** Left exactly as originally written below for an accurate record of what was found.
 
 ### 2.1 HIGH — Attached videos can never actually be watched, on any platform
 
@@ -60,6 +72,8 @@ Grepped across every `.tsx` file outside of `services.ts` itself: **neither func
 
 ## 3. Notifications — not implemented at all (scope clarification, not a bug)
 
+**Since implemented — see the remediation update in §0.** Left exactly as originally written below for an accurate record of what was found; the matrix in §4 still reflects the original "nothing to test" finding, since it predates the fix (see the note directly under the matrix's legend).
+
 Grepped the entire `src/` tree for `Notification`, `PushManager`, and `push` (case-insensitive): the only hits are the word "notifications" in marketing copy (`Carousel.tsx`: *"Receive instant notifications about emergency situations nearby"*) and unrelated array-`.push()` calls. **There is no `Notification` API usage, no push subscription, no `showNotification()` call anywhere in this codebase.** The in-app "Update available" / install prompts (`InstallPrompt.tsx`) are DOM banners, not OS-level notifications, and don't require the Notifications permission at all.
 
 This means the "Notifications where supported" item in the requested test matrix currently has nothing to test — there is no notification feature in this build to validate per-platform. This is worth stating explicitly rather than silently marking it "passed" on any platform, since a marketing claim implies a capability that does not exist yet.
@@ -69,6 +83,8 @@ This means the "Notifications where supported" item in the requested test matrix
 ## 4. Per-platform matrix
 
 Legend: ✅ expected to work as designed · ⚠️ works with a named, platform-specific caveat · ⛔ not supported by the platform at all (not a bug in this app — an inherent platform limitation) · — not applicable / nothing to test (see §3)
+
+*(The "Notifications" row below predates the fix described in §0 and still shows the original "nothing to test" finding — push notifications are now implemented, but a genuine per-platform notification matrix would need real-device verification this sandbox can't do, the same limitation §7 already names for everything else. Treat that row as stale rather than re-inferring it from §0's remediation note.)*
 
 | Capability | Android Chrome | iPhone Safari | iPad Safari | Win Chrome | Win Edge | macOS Safari | macOS Chrome | Linux Chrome/Firefox |
 |---|---|---|---|---|---|---|---|---|
@@ -130,12 +146,13 @@ Legend: ✅ expected to work as designed · ⚠️ works with a named, platform-
 
 None of the following can be closed from this sandbox. In priority order:
 
-1. **iOS Safari + iPadOS Safari, current version:** tap "ATTACH EVIDENCE" in the report form and observe the actual action sheet offered for the combined `image/*,video/*,audio/*` accept string (§5.3) — confirm whether a camera/mic capture option appears at all, and on which iOS version behavior changed if it has.
+1. **iOS Safari + iPadOS Safari, current version:** tap "ATTACH EVIDENCE" in the report form and observe the actual action sheet offered for the combined `image/*,video/*,audio/*` accept string (§5.3) — confirm whether a camera/mic capture option appears at all, and on which iOS version behavior changed if it has. Now that `input.capture='environment'` is set for video too (not just images — see §0's remediation update), also confirm this actually improves iOS's behavior rather than being silently ignored; either way, `startRecording`'s in-page recorder button is the universal fallback that doesn't depend on this at all.
 2. **iPad specifically, default configuration (not "Request Mobile Website"):** confirm whether the iOS-install-banner's user-agent sniff (`InstallPrompt.tsx` line 10) actually fires, given iPadOS's default desktop-class UA string (§5.1).
 3. **iOS Safari, installed standalone:** confirm actual behavior against the manifest's `orientation: "portrait-primary"` lock when the device is rotated (§5.5).
-4. **Any platform:** confirm the video-playback gap in §2.1 is reproducible as described (tap/click a report's video thumbnail and confirm nothing happens) before prioritizing a fix — this is the one finding here likely to matter most to end users.
+4. **Any platform:** confirm the §2.1 video-playback fix actually works as intended on a real touchscreen (tap a report's video thumbnail, confirm the full-size dialog opens and plays with sound) — the fix is code-verified and unit-testable, but has never been tapped on a real device.
 5. **Desktop Firefox (Windows/macOS/Linux):** confirm no install prompt of any kind appears, matching §5.2, so this is documented as expected rather than investigated as a bug report later.
 6. General smoke pass per platform: sign-in, submit a report with each media type, go offline mid-session (airplane mode) and confirm the draft persists, then reconnect and confirm auto-sync — all of which the existing automated suite already covers at the unit/component level (Phases 3, 4, 7) but which has never been exercised end-to-end on real hardware (same gap `IMPLEMENTATION_STATUS.MD` already names for Phase 11's Playwright suite).
+7. **Push notifications, once Cloud Functions are deployed and `VITE_FIREBASE_VAPID_KEY` is set (see `GITHUB_PAGES_PRODUCTION_GUIDE.md` §1.7):** confirm a real device actually receives a push — both in the foreground (in-app toast) and in the background/tab-closed case (OS-level notification via `sw.ts`'s `onBackgroundMessage`). This is the one part of this entire report that genuinely cannot be verified any way other than a real device receiving a real push; everything else the Functions side does is unit-tested (`FIREBASE_FUNCTIONS_ARCHITECTURE.md` §11.2), but "did FCM actually deliver it" is not something a unit test can prove.
 
 ---
 

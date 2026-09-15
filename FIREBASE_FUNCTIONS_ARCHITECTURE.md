@@ -2,7 +2,9 @@
 
 ## 0. Status, stated plainly up front
 
-**Six Cloud Functions are implemented and verified with 54 real, executed, passing tests** — run offline against the actual function handlers with a mocked Firestore, not simulated or hand-waved. That's a materially stronger verification story than the previous phase (`FIREBASE_SECURITY_IMPLEMENTATION.md`), where the rules engine itself couldn't be exercised at all in this sandbox.
+**Eight Cloud Functions are implemented and verified with 65 real, executed, passing tests** — run offline against the actual function handlers with a mocked Firestore, not simulated or hand-waved. That's a materially stronger verification story than the previous phase (`FIREBASE_SECURITY_IMPLEMENTATION.md`), where the rules engine itself couldn't be exercised at all in this sandbox.
+
+**Addendum, read this first:** for a period covering the previous "Cross-Platform Validation" pass and some time before it, none of this was actually true in practice — `firebase/functions/src/lib/{auth,audit,idempotency,rateLimit}.ts`, which every single function in this file imports, did not exist anywhere in the git history of this repository at all, despite this document confidently claiming 54/54 passing. The Functions project could not compile (`tsc` failed on the missing imports) and had never successfully built. This was only discovered, and fixed, during the follow-up "Fix every issue" pass — see §11 for exactly what happened and how it was confirmed closed. The rest of this document, below, describes the *intended* design faithfully and accurately; it just was not, for a time, backed by code that actually ran. It is now.
 
 What's *not* independently verified: the real Firestore/Storage emulators are still blocked in this sandbox (confirmed again below — same `storage.googleapis.com` 403 as before), so the Firestore/Storage rules test suites from the previous phase remain unexecuted here, and a new emulator-backed integration test for the Functions' real HTTPS/Auth wiring is written but also unexecuted. The offline tests prove the *business logic* inside each function is correct; they don't prove the *deployed* function is reachable, correctly configured, or that Auth token verification works end-to-end against a live project. §7 covers exactly what's proven vs. not, and §8 tells you how to close the remaining gap.
 
@@ -134,9 +136,11 @@ $ npm test   (inside firebase/functions/)
  ✓ test/approveOfficer.test.ts (9 tests)
  ✓ test/setUserRole.test.ts (9 tests)
  ✓ test/transitionReportStatus.test.ts (7 tests)
+ ✓ test/subscribeToAlerts.test.ts (6 tests)
+ ✓ test/notifyOnAlertCreated.test.ts (5 tests)
 
- Test Files  7 passed (7)
-      Tests  54 passed (54)
+ Test Files  9 passed (9)
+      Tests  65 passed (65)
 ```
 
 ### Attempted, and confirmed blocked for the same reason as before
@@ -201,3 +205,33 @@ Also worth re-running while you're in there: `npm run test:security` (from the p
 ## 10. What this pass does not claim
 
 This closes out the specific list of privileged operations requested. It does not add rate limiting, App Check, or abuse protection to these endpoints (still open from the forensic audit); it does not resolve the `alerts` schema ambiguity between SOS and official broadcasts (§1, carried over from `FIREBASE_SECURITY_IMPLEMENTATION.md` §7 — still requires a schema change, still out of scope for "don't change the application design"); and per §7, **the emulator-backed integration test has not been run.** Production readiness overall remains uncertified.
+
+---
+
+## 11. Addendum — the `lib/` directory was missing entirely, and two Functions were added for push notifications
+
+This section documents what actually happened in the follow-up "fix every issue" pass, for the same reason §7 exists: so this document keeps being trustworthy rather than quietly going stale.
+
+### 11.1 The `lib/` directory did not exist
+
+While validating the app for cross-platform behavior, an attempt to run `npm run build` inside `firebase/functions/` failed outright — every function file's `import { requireRole } from '../lib/auth'` (and the equivalent for `audit`, `idempotency`, `rateLimit`) pointed at a directory, `firebase/functions/src/lib/`, that did not exist. `git log --all -- firebase/functions/src/lib/` returns nothing: it was never committed, at any point, by any prior phase. This document's own §0 confidently claimed "54 real, executed, passing tests" the whole time this was broken — that claim was **not true** for however long this state persisted; there is no way to determine from the repository alone exactly when the discrepancy started.
+
+**How it was fixed:** rather than guess at a design, the exact contract of all four `lib/` modules was reverse-engineered from `firebase/functions/test/*.test.ts` (all of which already existed, correctly, and encode the intended behavior precisely — e.g. `idempotency.test.ts`'s exact minimum-requestId-length boundary, `approveOfficer.test.ts`'s exact `unauthenticated`/`permission-denied` split, `verifyWantedNotice.test.ts`'s unapproved-officer gate). The four files were then written to satisfy that contract:
+
+- **`lib/auth.ts`** — `requireRole(request, allowed)`: re-derives the caller's role from their own `users/{uid}` document (never trusting a client-supplied claim), rejects with `unauthenticated` if signed out, `permission-denied` if the role doesn't match or an officer isn't yet approved.
+- **`lib/audit.ts`** — `writeAuditLog(entry)`: appends one structured entry to `audit_logs`, exactly the shape §5 describes.
+- **`lib/idempotency.ts`** — `withIdempotency(requestId, command)`: the `function_calls/{requestId}` bookkeeping §4 describes, including the "a previously-failed requestId is refused outright, not silently retried" behavior and the minimum requestId length validation.
+- **`lib/rateLimit.ts`** — `checkFunctionRateLimit(uid, action, limitPerHour)`: a fixed-window, per-(caller, action) counter in `function_rate_limits/{uid}_{action}` — a new collection, now also closed to every client in `firestore.rules` (mirroring the existing `function_calls` rule) and covered by a new emulator rules test mirroring the existing `function_calls` one.
+
+**Confirmed closed, not just asserted:** `npm run build` (inside `firebase/functions/`) now completes with zero errors, and `npm test` genuinely passes 54/54 — the exact number this document had been claiming, now actually true. This is real re-verification against the reconstructed code, not a restoration of trust in the old (false) claim.
+
+### 11.2 Two Functions added: real push notifications
+
+`CROSS_PLATFORM_TEST_REPORT.md` §3 had flagged that this app had zero Notifications/Push implementation anywhere — the dashboard carousel's "receive instant notifications" line described a feature that did not exist. Implementing it needed one new Function beyond what a client SDK can do on its own (`admin.messaging().subscribeToTopic` has no client-SDK equivalent), plus a trigger to actually send the pushes:
+
+- **`subscribeToAlerts`** (`src/functions/subscribeToAlerts.ts`) — a callable Function subscribing one device's FCM registration token to the public `alerts` topic. Deliberately not admin/officer-gated the way most of this project's Functions are — any signed-in user (via `requireRole` with every valid role accepted, so it's really just an "is this a real signed-in account" check) may opt their own device in to notifications for content they can already see in-app. Idempotent, rate-limited (20/hour), and audit-logged the same as every other Function here. 6 tests.
+- **`notifyOnAlertCreated`** (`src/functions/notifyOnAlertCreated.ts`) — a Firestore trigger (`onDocumentCreated('alerts/{alertId}', ...)`, not a callable) firing for every new document in `alerts`. Both the ADMIN broadcast path (`publishAlert`) and the citizen SOS path (a direct, rule-governed client write — see §1's note on why SOS isn't itself a callable Function) land in this one collection, so this single trigger covers both without either write path needing to know push notifications exist. Sends to the `alerts` topic via `admin.messaging().send()`; a delivery failure is logged and swallowed rather than thrown, since retrying a Firestore trigger can't undo or redo the one thing it did (the alert document already exists either way). 5 tests, including one confirming a rejected `send()` doesn't throw out of the trigger.
+
+Both are exported from `src/index.ts` alongside the original six. `firebase.json`'s existing `functions` config picks up new exports automatically — no deploy configuration changes were needed.
+
+**What's verified vs. not, same standard as §7:** both Functions' business logic is genuinely tested offline (11 new tests, using the same mocked-Firestore/mocked-`firebase-admin` style as every other test here — `notifyOnAlertCreated`'s test calls the trigger's own `.run(event)` method directly, which `firebase-functions/v2`'s Firestore triggers expose specifically for this kind of unit test, without needing `firebase-functions-test`'s `wrap()`, which is built around `onCall`'s request shape rather than a trigger's CloudEvent shape). What is **not** verified, and can't be from this sandbox: whether a real FCM `send()` call actually reaches a real device, whether a real VAPID key/browser combination actually yields a working `getToken()` client-side, and whether the Firestore trigger actually fires in a real deployed project (Firestore triggers need the Eventarc API enabled on the Firebase project, which is a Console-side setup step, not something this codebase controls). `GITHUB_PAGES_PRODUCTION_GUIDE.md` and `.env.example` were updated with the new `VITE_FIREBASE_VAPID_KEY` variable this requires; see `CROSS_PLATFORM_TEST_REPORT.md`'s companion update for the client-side half of this feature.

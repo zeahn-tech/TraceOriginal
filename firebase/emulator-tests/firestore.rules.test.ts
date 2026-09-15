@@ -478,3 +478,13 @@ describe('firestore.rules — /function_calls/{requestId} (internal idempotency 
     await assertFails(setDoc(doc(asAdmin(), 'function_calls', 'req-2'), { status: 'completed' }))
   })
 })
+
+describe('firestore.rules — /function_rate_limits/{id} (internal per-caller rate counters)', () => {
+  it('is completely inaccessible to every client, including admin, for both read and write', async () => {
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), 'function_rate_limits', `${ADMIN}_publishAlert`), { windowStart: Date.now(), count: 1 })
+    })
+    await assertFails(getDoc(doc(asAdmin(), 'function_rate_limits', `${ADMIN}_publishAlert`)))
+    await assertFails(setDoc(doc(asAdmin(), 'function_rate_limits', `${ADMIN}_setUserStatus`), { windowStart: Date.now(), count: 1 }))
+  })
+})

@@ -20,7 +20,16 @@ debug.keystore
 # Node
 node_modules/
 dist/
-lib/
+# Compiled Cloud Functions output only (see firebase/functions/tsconfig.json
+# outDir) — deliberately NOT a bare `lib/` pattern. An unanchored `lib/`
+# here previously matched ANY directory named `lib` anywhere in the repo,
+# including `firebase/functions/src/lib/`, which is real, hand-written
+# source code (auth/audit/idempotency/rateLimit helpers every Cloud
+# Function imports) — that meant it was silently never committed at all,
+# and the whole Functions package couldn't compile as a result. See
+# IMPLIMENTATION_STATUS.MD Phase 14 and FIREBASE_FUNCTIONS_ARCHITECTURE.md
+# §11.1 for the full account of what that broke and how it was found.
+/firebase/functions/lib/
 *.tsbuildinfo
 .npm-global/
 
