@@ -1,4 +1,4 @@
-import { app, firebaseReady, subscribeToAlerts } from './services'
+import { whenIdle } from './shared/idle'
 
 /**
  * Fixed: this app previously had zero Notifications/Push implementation
@@ -24,6 +24,13 @@ import { app, firebaseReady, subscribeToAlerts } from './services'
 export type PushOutcome = { ok:true } | { ok:false; reason:string }
 
 async function loadMessaging(){
+  // Dynamically imported (rather than a static top-level import of
+  // './services') so that pages which never touch push notifications —
+  // every public/unauthenticated route — don't pull the entire Firebase
+  // SDK (auth+firestore+storage+functions, ~600 KB) into the app's
+  // initial critical-path bundle just to read one boolean and one
+  // possibly-undefined app instance. See LIGHTHOUSE_PRODUCTION_REPORT.md.
+  const { app, firebaseReady } = await import('./services')
   if(!firebaseReady || !app) return undefined
   const mod = await import('firebase/messaging')
   if(!(await mod.isSupported())) return undefined
@@ -44,6 +51,7 @@ export async function enablePushNotifications():Promise<PushOutcome>{
     const registration = await navigator.serviceWorker.ready
     const token = await loaded.mod.getToken(loaded.messaging,{ vapidKey, serviceWorkerRegistration:registration })
     if(!token) return {ok:false,reason:'Could not obtain a push token from this browser.'}
+    const { subscribeToAlerts } = await import('./services')
     await subscribeToAlerts({ token })
     return {ok:true}
   } catch (err) {
@@ -61,11 +69,19 @@ export async function enablePushNotifications():Promise<PushOutcome>{
 export function listenForForegroundAlerts(onAlert:(title:string,body:string)=>void):()=>void{
   let unsubscribed = false
   let unsubscribe = ()=>{}
-  loadMessaging().then(loaded=>{
-    if(!loaded || unsubscribed) return
-    unsubscribe = loaded.mod.onMessage(loaded.messaging, payload=>{
-      onAlert(payload.notification?.title ?? 'TraceNet Alert', payload.notification?.body ?? '')
+  // Deferred to browser idle time (see src/shared/idle.ts) for the same
+  // reason as services.ts's other lazy-load points: this pulls in the
+  // Firebase SDK, and this function is called unconditionally from
+  // App.tsx on every route (including public/unauthenticated ones), so
+  // starting that fetch immediately would put it back in competition
+  // with the initial paint's own resources on a throttled connection.
+  const cancelIdle = whenIdle(()=>{
+    loadMessaging().then(loaded=>{
+      if(!loaded || unsubscribed) return
+      unsubscribe = loaded.mod.onMessage(loaded.messaging, payload=>{
+        onAlert(payload.notification?.title ?? 'TraceNet Alert', payload.notification?.body ?? '')
+      })
     })
   })
-  return ()=>{ unsubscribed = true; unsubscribe() }
+  return ()=>{ unsubscribed = true; cancelIdle(); unsubscribe() }
 }
