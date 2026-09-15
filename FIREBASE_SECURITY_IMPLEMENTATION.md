@@ -159,7 +159,7 @@ Once that comes back clean, I'll update this document's §0 to reflect actual, v
 | `firebase/firestore.rules` | New |
 | `firebase/storage.rules` | New |
 | `firebase.json` | New |
-| `.firebaserc` | New (placeholder project id `tracenet-emulator-test` — replace with your real Firebase project id before deploying) |
+| `.firebaserc` | Updated (Phase 16) — now points to the real project id `tracenet-23a64`, replacing the emulator-only placeholder `tracenet-emulator-test` this row originally called out. See `FIREBASE_BACKEND_SETUP.md`. |
 | `firebase/emulator-tests/firestore.rules.test.ts` | New — 49 tests |
 | `firebase/emulator-tests/storage.rules.test.ts` | New — 23 tests |
 | `firebase/emulator-tests/vitest.config.ts` | New — separate Node-environment config so these don't run as part of the regular `npm test` (which stays jsdom-based and mock-based, unaffected) |
